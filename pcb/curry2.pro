@@ -1,6 +1,6 @@
-update=Sun 24 Mar 2013 12:34:02 PM CET
+update=Tue 26 Mar 2013 03:36:49 PM CET
 version=1
-last_client=kicad
+last_client=eeschema
 [cvpcb]
 version=1
 NetIExt=net
@@ -36,6 +36,8 @@ LibName8=led
 LibName9=dip_sockets
 LibName10=pga_sockets
 LibName11=valves
+[general]
+version=1
 [eeschema]
 version=1
 LibDir=
@@ -77,5 +79,5 @@ LibName29=contrib
 LibName30=valves
 LibName31=/home/mullemeck/Projekt/Libs/kicad/raspi
 LibName32=/home/mullemeck/Projekt/Libs/kicad/ti
-[general]
-version=1
+LibName33=/home/mullemeck/Projekt/Libs/kicad/ia0515s_
+LibName34=/home/mullemeck/Projekt/Libs/kicad/lt3032
