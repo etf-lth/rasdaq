@@ -1,4 +1,4 @@
-EESchema Schematic File Version 2  date Tue 26 Mar 2013 09:30:36 PM CET
+EESchema Schematic File Version 2  date Wed 27 Mar 2013 08:49:56 PM CET
 LIBS:power
 LIBS:device
 LIBS:transistors
@@ -33,14 +33,15 @@ LIBS:raspi
 LIBS:ti
 LIBS:ia0515s_
 LIBS:lt3032
+LIBS:bq32000
 LIBS:curry2-cache
 EELAYER 27 0
 EELAYER END
 $Descr A4 11693 8268
 encoding utf-8
-Sheet 3 6
+Sheet 2 6
 Title ""
-Date "26 mar 2013"
+Date "27 mar 2013"
 Rev ""
 Comp ""
 Comment1 ""

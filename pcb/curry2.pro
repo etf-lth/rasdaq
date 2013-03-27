@@ -1,4 +1,4 @@
-update=Tue 26 Mar 2013 03:36:49 PM CET
+update=Wed 27 Mar 2013 08:43:35 PM CET
 version=1
 last_client=eeschema
 [cvpcb]
@@ -81,3 +81,4 @@ LibName31=/home/mullemeck/Projekt/Libs/kicad/raspi
 LibName32=/home/mullemeck/Projekt/Libs/kicad/ti
 LibName33=/home/mullemeck/Projekt/Libs/kicad/ia0515s_
 LibName34=/home/mullemeck/Projekt/Libs/kicad/lt3032
+LibName35=/home/mullemeck/Projekt/Libs/kicad/bq32000
