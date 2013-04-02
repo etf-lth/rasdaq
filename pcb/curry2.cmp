@@ -1,4 +1,4 @@
-Cmp-Mod V01 Created by CvPcb (2011-nov-30)-testing date = Thu 28 Mar 2013 06:56:44 PM CET
+Cmp-Mod V01 Created by CvPcb (2013-mar-13)-testing date = Sun 31 Mar 2013 06:45:07 PM CEST
 
 BeginCmp
 TimeStamp = /515441EF;
@@ -638,6 +638,13 @@ IdModule  = PIN_ARRAY_5x2;
 EndCmp
 
 BeginCmp
+TimeStamp = /51585EB3;
+Reference = R1;
+ValeurCmp = R;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
 TimeStamp = /5153ED42;
 Reference = R101;
 ValeurCmp = R;
@@ -1159,14 +1166,14 @@ BeginCmp
 TimeStamp = /5154493A;
 Reference = X101;
 ValeurCmp = CRYSTAL;
-IdModule  = Q_49U3HMS;
+IdModule  = SIL-2;
 EndCmp
 
 BeginCmp
 TimeStamp = /515330C4;
 Reference = X102;
 ValeurCmp = CRYSTAL;
-IdModule  = SIL-2;
+IdModule  = Q_49U3HMS;
 EndCmp
 
 EndListe
