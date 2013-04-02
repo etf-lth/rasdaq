@@ -1,0 +1,94 @@
+Cmp-Mod V01 Created by CvPcb (2013-mar-13)-testing date = Tue 02 Apr 2013 06:22:20 PM CEST
+
+BeginCmp
+TimeStamp = /515AFAFB;
+Reference = C1;
+ValeurCmp = Cf;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFC7B;
+Reference = C2;
+ValeurCmp = Cf;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFEE1;
+Reference = C3;
+ValeurCmp = 100n;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFB18;
+Reference = C4;
+ValeurCmp = 1n;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFEF0;
+Reference = C5;
+ValeurCmp = 100n;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFC81;
+Reference = C6;
+ValeurCmp = 1n;
+IdModule  = SM0805;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFDA6;
+Reference = C7;
+ValeurCmp = massor;
+IdModule  = SM1812L;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AFBFF;
+Reference = JP1;
+ValeurCmp = JUMPER3;
+IdModule  = PIN_ARRAY_3X1;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AF8A6;
+Reference = P1;
+ValeurCmp = CH_A;
+IdModule  = bornier2;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AF8B5;
+Reference = P2;
+ValeurCmp = CH_B;
+IdModule  = bornier2;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AF97B;
+Reference = P3;
+ValeurCmp = RADAQ;
+IdModule  = PIN_ARRAY_5x2;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AF7DF;
+Reference = U1;
+ValeurCmp = ACS710;
+IdModule  = SO16L;
+EndCmp
+
+BeginCmp
+TimeStamp = /515AF7D2;
+Reference = U2;
+ValeurCmp = ACS710;
+IdModule  = SO16L;
+EndCmp
+
+EndListe
