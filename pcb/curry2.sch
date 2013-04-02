@@ -1,4 +1,4 @@
-EESchema Schematic File Version 2  date Tue 02 Apr 2013 03:24:17 PM CEST
+EESchema Schematic File Version 2  date Tue 02 Apr 2013 03:29:12 PM CEST
 LIBS:power
 LIBS:device
 LIBS:transistors
@@ -685,17 +685,6 @@ F 1 "CONN_4X2" V 8775 3900 40  0000 C CNN
 F 2 "" H 8775 3900 60  0001 C CNN
 F 3 "" H 8775 3900 60  0001 C CNN
 	1    8775 3900
-	1    0    0    -1  
-$EndComp
-$Comp
-L GND #PWR07
-U 1 1 5153C3CF
-P 3300 4200
-F 0 "#PWR07" H 3300 4200 30  0001 C CNN
-F 1 "GND" H 3300 4130 30  0001 C CNN
-F 2 "" H 3300 4200 60  0001 C CNN
-F 3 "" H 3300 4200 60  0001 C CNN
-	1    3300 4200
 	1    0    0    -1  
 $EndComp
 $Comp
@@ -1727,35 +1716,6 @@ Wire Wire Line
 	1950 3700 1850 3700
 Wire Wire Line
 	1850 3700 1850 3800
-$Comp
-L GND #PWR?
-U 1 1 515B25BC
-P 1850 4200
-F 0 "#PWR?" H 1850 4200 30  0001 C CNN
-F 1 "GND" H 1850 4130 30  0001 C CNN
-F 2 "" H 1850 4200 60  0001 C CNN
-F 3 "" H 1850 4200 60  0001 C CNN
-	1    1850 4200
-	1    0    0    -1  
-$EndComp
-Wire Wire Line
-	1850 4000 1850 4100
-Wire Wire Line
-	1850 4100 1850 4200
-Wire Wire Line
-	1850 4000 1950 4000
-Wire Wire Line
-	1950 4100 1850 4100
-Connection ~ 1850 4100
-Wire Wire Line
-	3300 4000 3300 4100
-Wire Wire Line
-	3300 4100 3300 4200
-Wire Wire Line
-	3300 4000 3200 4000
-Wire Wire Line
-	3200 4100 3300 4100
-Connection ~ 3300 4100
 Wire Wire Line
 	1850 3300 1850 3500
 Connection ~ 1850 3500
