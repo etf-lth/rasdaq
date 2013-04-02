@@ -1,4 +1,4 @@
-EESchema Schematic File Version 2  date Mon 01 Apr 2013 04:53:06 PM CEST
+EESchema Schematic File Version 2  date Mon 01 Apr 2013 04:52:59 PM CEST
 LIBS:power
 LIBS:device
 LIBS:transistors
@@ -39,10 +39,10 @@ EELAYER 27 0
 EELAYER END
 $Descr A4 11693 8268
 encoding utf-8
-Sheet 3 6
-Title "noname.sch"
-Date "1 apr 2013"
-Rev ""
+Sheet 4 6
+Title "radaq"
+Date "2 apr 2013"
+Rev "R1A"
 Comp ""
 Comment1 ""
 Comment2 ""
