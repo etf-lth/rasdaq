@@ -1,6 +1,6 @@
 TARGET  =radaq_avr
 MCU     =atmega88p
-OBJS    =main.o
+OBJS    =main.o adc.o
 
 CC      =avr-gcc
 OBJCOPY =avr-objcopy

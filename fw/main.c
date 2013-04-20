@@ -3,19 +3,20 @@
 #include <util/delay.h>
 #include <util/twi.h>
 
-//#include "uart.h"
-//#include "proto.h"
+#include "board.h"
+#include "adc.h"
+#include "protocol.h"
 
-volatile uint8_t led_state = 0;
+uint8_t errorflag = 0;
 
 ISR(TIMER0_COMPA_vect)
 {
-    static uint8_t div = 0;
+    /*static uint8_t div = 0;
 
     if (++div == 50) {
         PORTD ^= _BV(1)|_BV(2);
         div = 0;
-    }
+    }*/
 
     /*if (led_state == 2) {
         PORTD |= _BV(5);
@@ -28,26 +29,82 @@ ISR(TIMER0_COMPA_vect)
 
 void cmd_write(uint8_t reg, uint8_t data)
 {
-    /*switch (reg) {
-        default:
-    }*/
+    switch (reg) {
+    case PROTO_LED: // Set LEDs
+        PORTD = (PORTD & ~(_BV(IO_LED1)|_BV(IO_LED2)))
+            | (data & 1 ? _BV(IO_LED1) : 0)
+            | (data & 2 ? _BV(IO_LED2) : 0);
+        break;
+
+    case PROTO_MODE:
+        adc_setMode(data);
+        break;
+
+    case PROTO_STRB_WR:
+        adc_strobeWrite();
+        break;
+
+    case PROTO_STRB_RST:
+        adc_strobeReset();
+        break;
+
+    case PROTO_POWER:
+        adc_setPower(data);
+        break;
+
+    case PROTO_STANDBY:
+        adc_setStandby(data);
+        break;
+
+    case PROTO_RANGE:
+        adc_setRange(data);
+        break;
+
+    case PROTO_STARTCNV:
+        adc_startConversion();
+        break;
+
+    case PROTO_REFEN:
+        adc_setReference(data);
+        break;
+
+    default:
+        errorflag |= ERROR_INVALID_WRITE;
+    }
 }
 
 uint8_t cmd_read(uint8_t reg)
 {
-    /*switch (reg) {
-    case PROTO_CMD(GPIO_READ_PIN, GPIO_PORTB):
-        return PINB;
+    switch (reg) {
+    case PROTO_VERSION:
+        return PROTO_VERSION_BYTE;
 
-    case PROTO_CMD(GPIO_READ_PIN, GPIO_PORTC):
-        return PINC;
+    case PROTO_LED: //Get LEDs
+        return (PORTD & _BV(IO_LED1) ? 0x01 : 0)
+            | (PORTD & _BV(IO_LED2) ? 0x02 : 0);
 
-    case PROTO_CMD(GPIO_READ_PIN, GPIO_PORTD):
-        return PIND;
+    case PROTO_MODE:
+        return adc_getMode();
+
+    case PROTO_POWER:
+        return adc_getPower();
+
+    case PROTO_STANDBY:
+        return adc_getStandby();
+
+    case PROTO_RANGE:
+        return adc_getRange();
+
+    case PROTO_REFEN:
+        return adc_getReference();
+
+    case PROTO_STATUS:
+        return errorflag;
 
     default:
+        errorflag |= ERROR_INVALID_READ;
         return 0xaa;
-    }*/
+    }
 }
 
 ISR(TWI_vect)
@@ -105,20 +162,16 @@ ISR(TWI_vect)
 
 int main(void)
 {
-    /* Status LED */
-    DDRD = _BV(1)|_BV(2);
-    PORTD = _BV(1);
+    /* Status LEDs */
+    DDRD = _BV(IO_LED1)|_BV(IO_LED2);
 
-    /* I2C Bus to IRMA */
-    //PORTC = _BV(4)|_BV(5); // Pull-up on SDA and SCL
-
-    /* I2C to IRMA */
+    /* I2C to Raspberry */
     TWAR = (3 << 1);
     TWDR = 0xFF;
     TWCR = _BV(TWEN)|_BV(TWIE)|_BV(TWINT)|_BV(TWEA);
 
-    /* UART to IRMA */
-    //uart_init();
+    /* Init ADC */
+    adc_init();
 
     /* Internal timekeeping, 100Hz */
     TCCR0A = _BV(WGM01);
