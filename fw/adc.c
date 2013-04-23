@@ -42,8 +42,8 @@ void adc_strobeWrite(void)
 
 void adc_strobeReset(void)
 {
-    PORTC &= ~_BV(ADC_RESET);
     PORTC |= _BV(ADC_RESET);
+    PORTC &= ~_BV(ADC_RESET);
 }
 
 int adc_getPower(void)
