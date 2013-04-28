@@ -8,9 +8,14 @@
 #include "protocol.h"
 
 uint8_t errorflag = 0;
+volatile uint16_t burst = 0;
 
 ISR(TIMER0_COMPA_vect)
 {
+    if (burst > 0) {
+        adc_startConversion();
+        burst--;
+    }
     /*static uint8_t div = 0;
 
     if (++div == 50) {
@@ -66,6 +71,10 @@ void cmd_write(uint8_t reg, uint8_t data)
 
     case PROTO_REFEN:
         adc_setReference(data);
+        break;
+
+    case PROTO_BURST:
+        burst = 1024;
         break;
 
     default:

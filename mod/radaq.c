@@ -9,6 +9,7 @@
 #include <linux/i2c.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
+#include <linux/semaphore.h>
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/delay.h>
@@ -32,6 +33,7 @@ enum {
     PROTO_STARTCNV  = 8,
     PROTO_REFEN     = 9,
     PROTO_STATUS    = 10, 
+    PROTO_BURST     = 11,
 };
 
 #define ERROR_INVALID_WRITE 0x01
@@ -60,6 +62,10 @@ static struct gpio radaq_gpios[] = {
 };
 
 struct radaq {
+    int16_t buffer[1024][8];
+    size_t idx;
+    struct semaphore sem;
+    struct device *dev;
 };
 
 static int radaq_read_i2c(struct device *dev, uint8_t *data, uint8_t off)
@@ -191,14 +197,32 @@ static inline int16_t radaq_unswizzle(uint32_t reg)
 static irqreturn_t radaq_isr(int irq, void *data)
 {
     uint32_t result[8], idx;
+    struct radaq *rdq = data;
 
     radaq_read_result(result);
 
-    printk(KERN_NOTICE "%s: we've got irq %d\n", __FUNCTION__, irq);
+    //printk(KERN_NOTICE "%s: we've got irq %d\n", __FUNCTION__, irq);
+
+    if (rdq->idx >= 1024) {
+        printk("kaos\n");
+        return IRQ_HANDLED;
+    }
 
     for (idx=0; idx<8; idx++) {
-        printk(KERN_NOTICE "%s: result %d = %d\n",
-                __FUNCTION__, idx, radaq_unswizzle(result[idx]));
+        struct radaq *rdq = data;
+        rdq->buffer[rdq->idx][idx] = radaq_unswizzle(result[idx]);
+        /*printk(KERN_NOTICE "%s: result %d = %d\n",
+                __FUNCTION__, idx, radaq_unswizzle(result[idx]));*/
+    }
+    rdq->idx++;
+
+    if (rdq->idx == 1024) {
+        rdq->idx = 0;
+        up(&rdq->sem);
+        printk("isr: done.\n");
+    //} else {
+        //radaq_write_i2c(rdq->dev, 0x00, PROTO_STARTCNV);
+        //printk("isr: idx=%d, trigging again\n", rdq->idx);
     }
 
     return IRQ_HANDLED;
@@ -208,9 +232,21 @@ static int radaq_procfs_test_read(char *page, char **start,
     off_t off, int count, int *eof, void *data)
 {
     struct device *dev = data;
+    struct radaq *rdq = i2c_get_clientdata(to_i2c_client(dev));
     int len;
 
-    len = snprintf(page, count, "%02x\n", 0);
+    len = snprintf(page, count, "%d %d %d %d %d %d %d %d\n",
+            rdq->buffer[rdq->idx][0], rdq->buffer[rdq->idx][1],
+            rdq->buffer[rdq->idx][2], rdq->buffer[rdq->idx][3],
+            rdq->buffer[rdq->idx][4], rdq->buffer[rdq->idx][5],
+            rdq->buffer[rdq->idx][6], rdq->buffer[rdq->idx][7]);
+    //rdq->idx++;
+
+    if (rdq->idx == 1024) {
+        printk("reached end of file.\n");
+    } else {
+        printk("now idx %d\n", rdq->idx);
+    }
 
     return len;
 }
@@ -219,19 +255,39 @@ static int radaq_procfs_test_write(struct file *file,
     const char *buffer, unsigned long count, void *data)
 {
     struct device *dev = data;
+    struct radaq *rdq = i2c_get_clientdata(to_i2c_client(dev));
 
-    radaq_write_i2c(dev, 0x01, PROTO_POWER);
+    uint32_t reg;
 
-    mdelay(100);
+    sscanf(buffer, "%02x\n", &reg);
 
-    radaq_write_i2c(dev, 0, PROTO_STRB_RST);
-    radaq_write_i2c(dev, 0x00, PROTO_STANDBY);
-    radaq_write_reg(dev, (1<<31)|(1<<27)|(1<<13)|0x000003ff);
-    radaq_write_i2c(dev, 0x01, PROTO_REFEN);
+    switch (reg) {
+        case 1:
+            radaq_write_i2c(dev, 0x01, PROTO_POWER);
 
-    mdelay(100);
+            mdelay(100);
 
-    radaq_write_i2c(dev, 0x00, PROTO_STARTCNV);
+            radaq_write_i2c(dev, 0, PROTO_STRB_RST);
+            radaq_write_i2c(dev, 0x00, PROTO_STANDBY);
+            radaq_write_reg(dev, (1<<31)|(1<<27)|(1<<13)|0x000003ff);
+            radaq_write_i2c(dev, 0x01, PROTO_REFEN);
+
+            mdelay(100);
+
+            rdq->idx = 0;
+
+            radaq_write_i2c(dev, 0x00, PROTO_BURST);
+
+            printk("waiting for semaphore...\n");
+            down_interruptible(&rdq->sem);
+            printk("semaphore held.\n");
+
+            rdq->idx = 0;
+            break;
+
+        case 2:
+            rdq->idx++;
+    }
 
     return count;
 }
@@ -295,7 +351,11 @@ static int radaq_probe(struct i2c_client *client,
 
     // Allocate a radaq struct
     rdq = kmalloc(sizeof(struct radaq), GFP_KERNEL);
-    
+    rdq->idx = 0;
+    sema_init(&rdq->sem, 0);
+    rdq->dev = dev;
+    memset(rdq->buffer, 0, sizeof(rdq->buffer));
+
     // Register GPIO interrupt
     if (request_irq(gpio_to_irq(2), radaq_isr, IRQ_TYPE_EDGE_RISING, "Radaq", rdq)) {
         dev_err(dev, "Unable to register GPIO interrupt\n");
