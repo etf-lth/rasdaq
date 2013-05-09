@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/proc_fs.h>
+#include <linux/cdev.h>
 
 #define GPIOSET(x) (0x1c+(x)*4)
 #define GPIOCLR(x) (0x28+(x)*4)
@@ -61,12 +62,17 @@ static struct gpio radaq_gpios[] = {
     { 2,    GPIOF_IN, "Radaq INT" },
 };
 
+static dev_t devno;
+static struct class *class;
+
 struct radaq {
+    struct cdev *cdev;
+
     int16_t buffer[1024][8];
     size_t idx;
     struct semaphore sem;
-    struct device *dev;
-};
+    struct device *i2cdev, *ctrldev;
+} rdq;
 
 static int radaq_read_i2c(struct device *dev, uint8_t *data, uint8_t off)
 {
@@ -197,28 +203,28 @@ static inline int16_t radaq_unswizzle(uint32_t reg)
 static irqreturn_t radaq_isr(int irq, void *data)
 {
     uint32_t result[8], idx;
-    struct radaq *rdq = data;
+    //struct radaq *rdq = data;
 
     radaq_read_result(result);
 
     //printk(KERN_NOTICE "%s: we've got irq %d\n", __FUNCTION__, irq);
 
-    if (rdq->idx >= 1024) {
+    if (rdq.idx >= 1024) {
         printk("kaos\n");
         return IRQ_HANDLED;
     }
 
     for (idx=0; idx<8; idx++) {
-        struct radaq *rdq = data;
-        rdq->buffer[rdq->idx][idx] = radaq_unswizzle(result[idx]);
+        //struct radaq *rdq = data;
+        rdq.buffer[rdq.idx][idx] = radaq_unswizzle(result[idx]);
         /*printk(KERN_NOTICE "%s: result %d = %d\n",
                 __FUNCTION__, idx, radaq_unswizzle(result[idx]));*/
     }
-    rdq->idx++;
+    rdq.idx++;
 
-    if (rdq->idx == 1024) {
-        rdq->idx = 0;
-        up(&rdq->sem);
+    if (rdq.idx == 1024) {
+        rdq.idx = 0;
+        up(&rdq.sem);
         printk("isr: done.\n");
     //} else {
         //radaq_write_i2c(rdq->dev, 0x00, PROTO_STARTCNV);
@@ -228,6 +234,7 @@ static irqreturn_t radaq_isr(int irq, void *data)
     return IRQ_HANDLED;
 }
 
+#if 0
 static int radaq_procfs_test_read(char *page, char **start,
     off_t off, int count, int *eof, void *data)
 {
@@ -291,6 +298,7 @@ static int radaq_procfs_test_write(struct file *file,
 
     return count;
 }
+#endif
 
 static int radaq_procfs_led_read(char *page, char **start,
     off_t off, int count, int *eof, void *data)
@@ -319,49 +327,102 @@ static int radaq_procfs_led_write(struct file *file,
     return count;
 }
 
+static int radaq_open(struct inode *inode, struct file *filp)
+{
+    printk("%s\n", __FUNCTION__);
+    return 0;
+}
+
+static int radaq_release(struct inode *inode, struct file *filp)
+{
+    printk("%s\n", __FUNCTION__);
+    return 0;
+}
+
+ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
+{
+    printk("%s\n", __FUNCTION__);
+    return 0;
+}
+
+ssize_t radaq_write(struct file *filp, const char *buf, size_t count, loff_t *offp)
+{
+    printk("%s\n", __FUNCTION__);
+    return 0;
+}
+
+static struct file_operations radaq_fops = {
+    .read = radaq_read,
+    .write = radaq_write,
+    .open = radaq_open,
+    .release = radaq_release,
+};
+
 static int radaq_probe(struct i2c_client *client,
         const struct i2c_device_id *id)
 {
-    struct device *dev = &client->dev;
+    struct device *i2cdev = &client->dev;
     uint8_t reg;
-    struct radaq *rdq;
+    //struct radaq *rdq;
     struct proc_dir_entry *ledfs, *testfs;
 
     if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
         return -ENODEV;
 
     // Try communicate with the MCU and check protocol version
-    if (radaq_read_i2c(dev, &reg, PROTO_VERSION)) {
-        dev_err(dev, "Unable to read protocol version\n");
+    if (radaq_read_i2c(i2cdev, &reg, PROTO_VERSION)) {
+        dev_err(i2cdev, "Unable to read protocol version\n");
         return -ENODEV;
     }
     
-    dev_notice(dev, "Protocol version = %02x\n", reg);
+    dev_notice(i2cdev, "Protocol version = %02x\n", reg);
 
     if (reg != PROTOCOL_VERSION) {
-        dev_err(dev, "Version not supported\n");
+        dev_err(i2cdev, "Version not supported\n");
         return -ENODEV;
     }
 
     // Register GPIO pins to detect conflicts
     if (gpio_request_array(radaq_gpios, ARRAY_SIZE(radaq_gpios))) {
-        dev_err(dev, "Unable to claim GPIOs\n");
+        dev_err(i2cdev, "Unable to claim GPIOs\n");
         return -ENODEV;
     }
 
     // Allocate a radaq struct
-    rdq = kmalloc(sizeof(struct radaq), GFP_KERNEL);
-    rdq->idx = 0;
-    sema_init(&rdq->sem, 0);
-    rdq->dev = dev;
-    memset(rdq->buffer, 0, sizeof(rdq->buffer));
+    //rdq = kmalloc(sizeof(struct radaq), GFP_KERNEL);
+    rdq.idx = 0;
+    sema_init(&rdq.sem, 0);
+    rdq.i2cdev = i2cdev;
+    memset(rdq.buffer, 0, sizeof(rdq.buffer));
+
+    // Alloc cdev
+    rdq.cdev = cdev_alloc();
+    cdev_init(rdq.cdev, &radaq_fops);
+    rdq.cdev->owner = THIS_MODULE;
+
+    if (cdev_add(rdq.cdev, devno, 1) < 0) {
+        dev_err(i2cdev, "Unable to add device\n");
+        cdev_del(rdq.cdev);
+        gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
+        //kfree(rdq);
+        return -ENOMEM;
+    }
+
+    printk("class=%08x, devno=%08x\n", class, devno);
+    rdq.ctrldev = device_create(class, NULL, devno, NULL, "radaq");
+    if (IS_ERR(rdq.ctrldev)) {
+        dev_err(i2cdev, "Unable to create device, error %ld\n", PTR_ERR(rdq.ctrldev));
+        cdev_del(rdq.cdev);
+        gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
+        return -ENOMEM;
+    }
 
     // Register GPIO interrupt
-    if (request_irq(gpio_to_irq(2), radaq_isr, IRQ_TYPE_EDGE_RISING, "Radaq", rdq)) {
-        dev_err(dev, "Unable to register GPIO interrupt\n");
+    if (request_irq(gpio_to_irq(2), radaq_isr, IRQ_TYPE_EDGE_RISING, "Radaq", NULL)) {
+        dev_err(i2cdev, "Unable to register GPIO interrupt\n");
 
         gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
-        kfree(rdq);
+        //kfree(rdq);
 
         return -ENODEV;
     }
@@ -369,14 +430,15 @@ static int radaq_probe(struct i2c_client *client,
     // Create procfs entry for controlling the leds
     ledfs = create_proc_entry("radaq_led", 0644, NULL);
     if (ledfs) {
-        ledfs->data = dev;
+        ledfs->data = i2cdev;
         ledfs->read_proc = radaq_procfs_led_read;
         ledfs->write_proc = radaq_procfs_led_write;
     } else {
-        dev_warn(dev, "Unable to register procfs entry\n");
+        dev_warn(i2cdev, "Unable to register procfs entry\n");
     }
     
     // Create procfs entry for testing
+#if 0
     testfs = create_proc_entry("radaq_test", 0644, NULL);
     if (testfs) {
         testfs->data = dev;
@@ -385,26 +447,35 @@ static int radaq_probe(struct i2c_client *client,
     } else {
         dev_warn(dev, "Unable to register procfs entry\n");
     }
+#endif
 
     // Save out handle
-    i2c_set_clientdata(client, rdq);
+    //i2c_set_clientdata(client, rdq);
 
     return 0;
 }
 
 static int __devexit radaq_remove(struct i2c_client *client)
 {
+#if 0
     struct radaq *rdq = i2c_get_clientdata(client);
+#endif
+
+    device_destroy(class, devno);
 
     // Remove procfs entry
     remove_proc_entry("radaq_led", NULL);
+#if 0
     remove_proc_entry("radaq_test", NULL);
+#endif
 
     // Release GPIOs
     gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
 
+#if 0
     // Free out struct
     kfree(rdq);
+#endif
 
     return 0;
 }
@@ -425,7 +496,45 @@ static struct i2c_driver radaq_driver = {
     .id_table   = radaq_id
 };
 
-module_i2c_driver(radaq_driver);
+static int radaq_init(void)
+{
+    int res;
+
+    res = alloc_chrdev_region(&devno, 0, 1, "radaq");
+    if (res < 0) {
+        printk("radaq: Unable to allocate major device number\n");
+
+        i2c_del_driver(&radaq_driver);
+
+        return res;
+    }
+
+    class = class_create(THIS_MODULE, "radaq");
+    if (IS_ERR(class)) {
+        printk("radaq: Unable to create device class\n");
+
+        unregister_chrdev_region(devno, 1);
+        i2c_del_driver(&radaq_driver);
+
+        return PTR_ERR(class);
+    }
+
+    i2c_add_driver(&radaq_driver);
+
+    return 0;
+}
+
+static void radaq_cleanup(void)
+{
+    i2c_del_driver(&radaq_driver);
+
+    unregister_chrdev_region(devno, 1);
+}
+
+module_init(radaq_init);
+module_exit(radaq_cleanup);
+
+//module_i2c_driver(radaq_driver);
 
 MODULE_AUTHOR("Fredrik Ahlberg <fredrik@etf.nu>");
 MODULE_DESCRIPTION("Radaq ADC driver");
