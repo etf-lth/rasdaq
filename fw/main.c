@@ -8,15 +8,10 @@
 #include "protocol.h"
 
 uint8_t errorflag = 0;
-//volatile uint16_t burst = 0, 
-volatile uint8_t run = 0;
 
-ISR(TIMER0_COMPA_vect)
+ISR(TIMER1_COMPA_vect)
 {
-//    if (run || (burst > 0 && burst--)) {
-    if (run) {
-        adc_startConversion();
-    }
+    adc_startConversion();
 }
 
 void cmd_write(uint8_t reg, uint8_t data)
@@ -65,7 +60,15 @@ void cmd_write(uint8_t reg, uint8_t data)
         break;*/
 
     case PROTO_RUN:
-        run = data;
+        TIMSK1 = data ? _BV(OCIE1A) : 0;
+        break;
+
+    case PROTO_FSDIVH:
+        OCR1AH = data;
+        break;
+
+    case PROTO_FSDIVL:
+        OCR1AL = data;
         break;
 
     default:
@@ -100,6 +103,12 @@ uint8_t cmd_read(uint8_t reg)
 
     case PROTO_STATUS:
         return errorflag;
+
+    case PROTO_FSDIVH:
+        return OCR1AH;
+
+    case PROTO_FSDIVL:
+        return OCR1AL;
 
     default:
         errorflag |= ERROR_INVALID_READ;
@@ -174,10 +183,18 @@ int main(void)
     adc_init();
 
     /* Internal timekeeping, ~1000Hz */
+#if 0
     TCCR0A = _BV(WGM01);
     TCCR0B = _BV(CS02)|_BV(CS00);
     OCR0A = 19;
     TIMSK0 = _BV(OCIE0A);
+#endif
+
+    TCCR1A = 0; //_BV(WGM01);
+    TCCR1B = _BV(WGM12)|_BV(CS10); // clkio/1
+    //OCR0A = 19;
+    //TIMSK1 = _BV(OCIE1A);
+
 
     /* Go for it! */
     sei();

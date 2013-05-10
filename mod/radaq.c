@@ -17,6 +17,8 @@
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
 
+//#define RADAQ_USE_COMPLETION
+
 /*
  * IOCTLs for userspace interface
  */
@@ -61,6 +63,8 @@ enum {
     PROTO_STATUS    = 10, 
     PROTO_BURST     = 11,
     PROTO_RUN       = 12,
+    PROTO_FSDIVH    = 13,
+    PROTO_FSDIVL    = 14,
 };
 
 #define ERROR_INVALID_WRITE 0x01
@@ -89,6 +93,8 @@ static struct gpio radaq_gpios[] = {
     { 30,   GPIOF_OUT_INIT_HIGH, "Radaq CS" },
     { 31,   GPIOF_OUT_INIT_HIGH, "Radaq RD" },
     { 2,    GPIOF_IN, "Radaq INT" },
+
+    { 45,   GPIOF_OUT_INIT_LOW, "Radaq ISR Debug" }
 };
 
 /*
@@ -96,6 +102,7 @@ static struct gpio radaq_gpios[] = {
  */
 static dev_t devno;
 static struct class *class;
+void __iomem *gpio;
 
 struct radaq {
     struct cdev *cdev;
@@ -103,7 +110,11 @@ struct radaq {
 
     int16_t buffer[2][BUFSIZE*CHANNELS];
     size_t hpage, tpage, idx;
+#ifdef RADAQ_USE_COMPLETION
+    struct completion comp;
+#else
     struct semaphore sem;
+#endif
     int channels;
     size_t bufsz;
     uint8_t leds;
@@ -161,6 +172,14 @@ static void radaq_set_led(int led, int state)
     radaq_write_i2c(rdq.i2cdev, rdq.leds, PROTO_LED);
 }
 
+static void radaq_set_samplerate(unsigned int fs)
+{
+    unsigned short divisor = (20000000L / fs) - 1;
+
+    radaq_write_i2c(rdq.i2cdev, divisor >> 8, PROTO_FSDIVH);
+    radaq_write_i2c(rdq.i2cdev, divisor, PROTO_FSDIVL);
+}
+
 /*
  * Write the ADC config register
  */
@@ -214,8 +233,7 @@ static int radaq_write_reg(struct device *dev, uint32_t reg)
  */
 static inline void radaq_read_result(uint32_t *data, int channels)
 {
-    void __iomem *gpio = __io_address(GPIO_BASE);
-    int delay;
+    //int delay;
 
     // assert /cs
     writel(1 << 30, gpio + GPIOCLR(0));
@@ -225,9 +243,9 @@ static inline void radaq_read_result(uint32_t *data, int channels)
         writel(1 << 31, gpio + GPIOCLR(0));
         
         // dummy read
-        for (delay=0; delay<1000; delay++) {
+        /*for (delay=0; delay<10; delay++) {
             *data = readl(gpio + GPIOLEV(0));
-        }
+        }*/
 
         // sample data bus
         *data++ = readl(gpio + GPIOLEV(0));
@@ -236,9 +254,9 @@ static inline void radaq_read_result(uint32_t *data, int channels)
         writel(1 << 31, gpio + GPIOSET(0));
 
         // delay for good measure
-        for (delay=0; delay<1000; delay++) {
+        /*for (delay=0; delay<10; delay++) {
             writel(1 << 31, gpio + GPIOSET(0));
-        }
+        }*/
     }
 
     // deassert /cs
@@ -262,6 +280,15 @@ static inline int16_t radaq_unswizzle(uint32_t reg)
     return res;
 }
 
+#if 0
+void radaq_tasklet_proc(unsigned long dummy)
+{
+    complete(&rdq.comp);
+}
+
+DECLARE_TASKLET(radaq_tasklet, radaq_tasklet_proc, 0);
+#endif
+
 /*
  * Conversion Complete Interrupt Service Routine (tm)
  */
@@ -274,6 +301,8 @@ static irqreturn_t radaq_isr(int irq, void *data)
         printk("isr: not running!\n");
         return IRQ_HANDLED;
     }
+
+    writel(1 << 13, gpio + GPIOSET(1));
 
     radaq_read_result(result, rdq.channels);
 
@@ -301,7 +330,12 @@ static irqreturn_t radaq_isr(int irq, void *data)
                 printk("isr: buffer overrun!\n");
             }
 
+#ifdef RADAQ_USE_COMPLETION
+            complete(&rdq.comp);
+#else
             up(&rdq.sem);
+#endif
+            //tasklet_schedule(&radaq_tasklet);
 
             //printk("isr: done.\n");
         //} else {
@@ -309,6 +343,8 @@ static irqreturn_t radaq_isr(int irq, void *data)
             //printk("isr: idx=%d, trigging again\n", rdq->idx);
         }
     }
+
+    writel(1 << 13, gpio + GPIOCLR(1));
 
     return IRQ_HANDLED;
 }
@@ -427,10 +463,10 @@ static void radaq_shutdown(void)
 
 static void radaq_start(void)
 {
+    printk("%s\n", __FUNCTION__);
     rdq.running = 1;
     radaq_set_led(0, 1);
     radaq_write_i2c(rdq.i2cdev, 0x01, PROTO_RUN);
-    printk("radaq_start: running!\n");
 }
 
 /*
@@ -450,8 +486,8 @@ static int radaq_release(struct inode *inode, struct file *filp)
 
 ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 {
-    printk("%s(%p, %u, %lld)\n",
-            __FUNCTION__, buf, count, *offp);
+    /*printk("%s(%p, %u, %lld)\n",
+            __FUNCTION__, buf, count, *offp);*/
     
     if (rdq.overrun) {
         printk("read: overrun\n");
@@ -462,12 +498,17 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
         radaq_start();
     }
 
+#ifdef RADAQ_USE_COMPLETION
+    init_completion(&rdq.comp);
+    wait_for_completion(&rdq.comp);
+#else
     if (down_interruptible(&rdq.sem)) {
         printk("read: aborted\n");
         radaq_write_i2c(rdq.i2cdev, 0x00, PROTO_RUN);
         radaq_set_led(0, 0);
         return 0;
     }
+#endif
 
     if (rdq.overrun) {
         printk("read: overrun\n");
@@ -495,16 +536,13 @@ ssize_t radaq_write(struct file *filp, const char *buf, size_t count, loff_t *of
 
 static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    printk("%s(%u, %08lx)\n",
-            __FUNCTION__, cmd, arg);
-
     switch (cmd) {
     case RADAQ_IOCTL_SAMPLERATE:
         printk("RADAQ_IOCTL_SAMPLERATE(fs=%luHz)\n", arg);
         if (arg < 1 || arg > SMPRATE_MAX) {
             return -EINVAL;
         }
-        // XXX Implement!
+        radaq_set_samplerate(arg);
         break;
 
     case RADAQ_IOCTL_CHANNELS:
@@ -530,6 +568,10 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
         rdq.running = 0;
         rdq.overrun = 0;
         break;
+
+    default:
+        printk("Invalid call %s(%u, %08lx)\n", __FUNCTION__, cmd, arg);
+        return -EINVAL;
     }
 
     return 0;
@@ -579,7 +621,9 @@ static int radaq_probe(struct i2c_client *client,
     // Allocate a radaq struct
     //rdq = kmalloc(sizeof(struct radaq), GFP_KERNEL);
     rdq.idx = 0;
+#ifndef RADAQ_USE_COMPLETION
     sema_init(&rdq.sem, 0);
+#endif
     rdq.i2cdev = i2cdev;
     memset(rdq.buffer, 0, sizeof(rdq.buffer));
     rdq.channels = CHANNELS;
@@ -697,6 +741,14 @@ static struct i2c_driver radaq_driver = {
 static int radaq_init(void)
 {
     int res;
+
+    gpio = __io_address(GPIO_BASE);
+
+#ifdef RADAQ_USE_COMPLETION
+    printk("radaq: Using completion\n");
+#else
+    printk("radaq: Using semaphore\n");
+#endif
 
     res = alloc_chrdev_region(&devno, 0, 1, "radaq");
     if (res < 0) {

@@ -17,6 +17,8 @@ enum {
     PROTO_STATUS    = 10,
     PROTO_BURST     = 11,
     PROTO_RUN       = 12,
+    PROTO_FSDIVH    = 13,
+    PROTO_FSDIVL    = 14,
 };
 
 #define ERROR_INVALID_WRITE 0x01

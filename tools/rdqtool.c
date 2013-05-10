@@ -83,11 +83,11 @@ int main(void)
 {
     radaq_open();
 
-    if (radaq_set_samplerate(5000) < 0) {
+    if (radaq_set_samplerate(20000) < 0) {
         return -1;
     }
 
-    if (radaq_set_channels(8) < 0) {
+    if (radaq_set_channels(1) < 0) {
         return -1;
     }
 
@@ -122,7 +122,7 @@ int main(void)
             break;
         }
         
-        printf("%d pages read (last page=%d bytes)\n", ++pages, read);
+        printf("\r%d pages read (last page=%d bytes)", ++pages, read);
     }
 
     fclose(f);
