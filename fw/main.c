@@ -8,28 +8,15 @@
 #include "protocol.h"
 
 uint8_t errorflag = 0;
-volatile uint16_t burst = 0;
+//volatile uint16_t burst = 0, 
+volatile uint8_t run = 0;
 
 ISR(TIMER0_COMPA_vect)
 {
-    if (burst > 0) {
+//    if (run || (burst > 0 && burst--)) {
+    if (run) {
         adc_startConversion();
-        burst--;
     }
-    /*static uint8_t div = 0;
-
-    if (++div == 50) {
-        PORTD ^= _BV(1)|_BV(2);
-        div = 0;
-    }*/
-
-    /*if (led_state == 2) {
-        PORTD |= _BV(5);
-        led_state = 3;
-    } else if (led_state == 3) {
-        PORTD &= ~_BV(5);
-        led_state = 0;
-    }*/
 }
 
 void cmd_write(uint8_t reg, uint8_t data)
@@ -73,8 +60,12 @@ void cmd_write(uint8_t reg, uint8_t data)
         adc_setReference(data);
         break;
 
-    case PROTO_BURST:
+    /*case PROTO_BURST:
         burst = 1024;
+        break;*/
+
+    case PROTO_RUN:
+        run = data;
         break;
 
     default:
@@ -182,10 +173,10 @@ int main(void)
     /* Init ADC */
     adc_init();
 
-    /* Internal timekeeping, 100Hz */
+    /* Internal timekeeping, ~1000Hz */
     TCCR0A = _BV(WGM01);
     TCCR0B = _BV(CS02)|_BV(CS00);
-    OCR0A = 195;
+    OCR0A = 19;
     TIMSK0 = _BV(OCIE0A);
 
     /* Go for it! */
