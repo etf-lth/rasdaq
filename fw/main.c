@@ -60,6 +60,8 @@ void cmd_write(uint8_t reg, uint8_t data)
         break;*/
 
     case PROTO_RUN:
+        TCNT1 = 0;      // starta om timern för att undvika för tidig utlösning.
+        TIFR1 = 0xff;   // nollställ alla interruptflaggor av samma skäl
         TIMSK1 = data ? _BV(OCIE1A) : 0;
         break;
 

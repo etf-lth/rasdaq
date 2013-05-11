@@ -6,4 +6,4 @@ clean:
 cleaner: clean
 	rm -f rdqtool
 
-rdqtool: rdqtool.c
+rdqtool: rdqtool.o radaq.o

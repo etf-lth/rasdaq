@@ -18,6 +18,7 @@
 #include <linux/uaccess.h>
 
 //#define RADAQ_USE_COMPLETION
+#define RADAQ_DEBUG
 
 /*
  * IOCTLs for userspace interface
@@ -27,6 +28,8 @@ enum {
     RADAQ_IOCTL_CHANNELS        = 0xcafe0001,
     RADAQ_IOCTL_BUFFER_SIZE     = 0xcafe0002,
     RADAQ_IOCTL_ARM             = 0xcafe0003,
+    RADAQ_IOCTL_HALT            = 0xcafe0004,
+    RADAQ_IOCTL_RESET           = 0xcafe0005,
 };
 
 /*
@@ -118,7 +121,7 @@ struct radaq {
     int channels;
     size_t bufsz;
     uint8_t leds;
-    int running, overrun;
+    int running, overrun, armed;
 } rdq;
 
 /*
@@ -161,6 +164,9 @@ static int radaq_write_i2c(struct device *dev, uint8_t data, uint8_t off)
     return -EIO;
 }
 
+/*
+ * Toggle led and write register value
+ */
 static void radaq_set_led(int led, int state)
 {
     if (state) {
@@ -172,6 +178,9 @@ static void radaq_set_led(int led, int state)
     radaq_write_i2c(rdq.i2cdev, rdq.leds, PROTO_LED);
 }
 
+/*
+ * Calculate sample rate divisor and write register values
+ */
 static void radaq_set_samplerate(unsigned int fs)
 {
     unsigned short divisor = (20000000L / fs) - 1;
@@ -187,7 +196,9 @@ static int radaq_write_reg(struct device *dev, uint32_t reg)
 {
     int idx;
 
+#ifdef RADAQ_DEBUG
     dev_notice(dev, "Writing ADC Config = %08x\n", reg);
+#endif
 
     // set software mode
     radaq_write_i2c(dev, 0x01, PROTO_MODE);
@@ -298,7 +309,9 @@ static irqreturn_t radaq_isr(int irq, void *data)
     //struct radaq *rdq = data;
 
     if (!rdq.running) {
-        printk("isr: not running!\n");
+#ifdef RADAQ_DEBUG
+        //printk("isr: not running!\n");
+#endif
         return IRQ_HANDLED;
     }
 
@@ -306,28 +319,18 @@ static irqreturn_t radaq_isr(int irq, void *data)
 
     radaq_read_result(result, rdq.channels);
 
-    //printk(KERN_NOTICE "%s: we've got irq %d\n", __FUNCTION__, irq);
-
-    /*if (rdq.idx >= 1024) {
-        printk("kaos\n");
-        return IRQ_HANDLED;
-    }*/
-
     for (idx=0; idx<rdq.channels; idx++) {
-        //struct radaq *rdq = data;
         rdq.buffer[rdq.hpage][rdq.idx++] = radaq_unswizzle(result[idx]);
-        /*printk(KERN_NOTICE "%s: result %d = %d\n",
-                __FUNCTION__, idx, radaq_unswizzle(result[idx]));*/
         if (rdq.idx == BUFSIZE) {
             rdq.idx = 0;
             rdq.hpage = !rdq.hpage;
 
-            //printk("isr: flippin' pages!\n");
-
             if (rdq.hpage == rdq.tpage) {
                 rdq.overrun = 1;
                 rdq.running = 0;
-                printk("isr: buffer overrun!\n");
+#ifdef RADAQ_DEBUG
+                //printk("isr: buffer overrun!\n");
+#endif
             }
 
 #ifdef RADAQ_USE_COMPLETION
@@ -336,11 +339,6 @@ static irqreturn_t radaq_isr(int irq, void *data)
             up(&rdq.sem);
 #endif
             //tasklet_schedule(&radaq_tasklet);
-
-            //printk("isr: done.\n");
-        //} else {
-            //radaq_write_i2c(rdq->dev, 0x00, PROTO_STARTCNV);
-            //printk("isr: idx=%d, trigging again\n", rdq->idx);
         }
     }
 
@@ -349,91 +347,9 @@ static irqreturn_t radaq_isr(int irq, void *data)
     return IRQ_HANDLED;
 }
 
-#if 0
-static int radaq_procfs_test_read(char *page, char **start,
-    off_t off, int count, int *eof, void *data)
-{
-    struct device *dev = data;
-    struct radaq *rdq = i2c_get_clientdata(to_i2c_client(dev));
-    int len;
-
-    len = snprintf(page, count, "%d %d %d %d %d %d %d %d\n",
-            rdq->buffer[rdq->idx][0], rdq->buffer[rdq->idx][1],
-            rdq->buffer[rdq->idx][2], rdq->buffer[rdq->idx][3],
-            rdq->buffer[rdq->idx][4], rdq->buffer[rdq->idx][5],
-            rdq->buffer[rdq->idx][6], rdq->buffer[rdq->idx][7]);
-    //rdq->idx++;
-
-    if (rdq->idx == 1024) {
-        printk("reached end of file.\n");
-    } else {
-        printk("now idx %d\n", rdq->idx);
-    }
-
-    return len;
-}
-
-static int radaq_procfs_test_write(struct file *file,
-    const char *buffer, unsigned long count, void *data)
-{
-    struct device *dev = data;
-    struct radaq *rdq = i2c_get_clientdata(to_i2c_client(dev));
-
-    uint32_t reg;
-
-    sscanf(buffer, "%02x\n", &reg);
-
-    switch (reg) {
-        case 1:
-
-            rdq->idx = 0;
-
-            radaq_write_i2c(dev, 0x00, PROTO_BURST);
-
-            printk("waiting for semaphore...\n");
-            down_interruptible(&rdq->sem);
-            printk("semaphore held.\n");
-
-            rdq->idx = 0;
-            break;
-
-        case 2:
-            rdq->idx++;
-    }
-
-    return count;
-}
-#endif
-
-#if 0
-static int radaq_procfs_led_read(char *page, char **start,
-    off_t off, int count, int *eof, void *data)
-{
-    struct device *dev = data;
-    uint8_t reg;
-    int len;
-
-    radaq_read_i2c(dev, &reg, PROTO_LED);
-
-    len = snprintf(page, count, "%02x\n", reg);
-
-    return len;
-}
-
-static int radaq_procfs_led_write(struct file *file,
-    const char *buffer, unsigned long count, void *data)
-{
-    struct device *dev = data;
-    uint32_t reg;
-
-    sscanf(buffer, "%02x\n", &reg);
-
-    radaq_write_i2c(dev, reg, PROTO_LED);
-
-    return count;
-}
-#endif
-
+/*
+ * Power up ADC and set configuration
+ */
 static void radaq_initialize(void)
 {
     radaq_write_i2c(rdq.i2cdev, 0x01, PROTO_POWER);
@@ -450,6 +366,9 @@ static void radaq_initialize(void)
     radaq_set_led(1, 1);
 }
 
+/*
+ * Power down ADC
+ */
 static void radaq_shutdown(void)
 {
     radaq_write_i2c(rdq.i2cdev, 0x00, PROTO_RUN);
@@ -461,12 +380,51 @@ static void radaq_shutdown(void)
     radaq_set_led(1, 0);
 }
 
+
+/*
+ * Start sampling!
+ */
 static void radaq_start(void)
 {
+#ifdef RADAQ_DEBUG
     printk("%s\n", __FUNCTION__);
+#endif
+
     rdq.running = 1;
     radaq_set_led(0, 1);
     radaq_write_i2c(rdq.i2cdev, 0x01, PROTO_RUN);
+}
+
+/*
+ * Stop pending operation
+ */
+static void radaq_stop(void)
+{
+#ifdef RADAQ_DEBUG
+    printk("%s\n", __FUNCTION__);
+#endif
+
+    radaq_write_i2c(rdq.i2cdev, 0x00, PROTO_RUN);
+    radaq_set_led(0, 0);
+    rdq.running = 0;
+}
+
+/*
+ * Reset ADC
+ */
+static void radaq_reset(void)
+{
+#ifdef RADAQ_DEBUG
+    printk("%s\n", __FUNCTION__);
+#endif
+
+    radaq_stop();
+    radaq_set_led(1, 0);
+    mdelay(100);
+    radaq_write_i2c(rdq.i2cdev, 0, PROTO_STRB_RST);
+    radaq_write_reg(rdq.i2cdev, (1<<31)|(1<<27)|(1<<13)|0x000003ff);
+    mdelay(100);
+    radaq_set_led(1, 1);
 }
 
 /*
@@ -474,28 +432,42 @@ static void radaq_start(void)
  */
 static int radaq_open(struct inode *inode, struct file *filp)
 {
+#ifdef RADAQ_DEBUG
     printk("%s\n", __FUNCTION__);
+#endif
+    radaq_reset();
+    rdq.armed = 0;
     return 0;
 }
 
 static int radaq_release(struct inode *inode, struct file *filp)
 {
+#ifdef RADAQ_DEBUG
     printk("%s\n", __FUNCTION__);
+#endif
+    radaq_stop();
     return 0;
 }
 
 ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 {
-    /*printk("%s(%p, %u, %lld)\n",
-            __FUNCTION__, buf, count, *offp);*/
-    
     if (rdq.overrun) {
-        printk("read: overrun\n");
+#ifdef RADAQ_DEBUG
+        printk("%s: overrun\n", __FUNCTION__);
+#endif
         return 0;
     }
 
     if (!rdq.running) {
-        radaq_start();
+        if (rdq.armed) {
+            radaq_start();
+            rdq.armed = 0;
+        } else {
+#ifdef RADAQ_DEBUG
+            printk("%s: not armed\n", __FUNCTION__);
+#endif
+            return 0;
+        }
     }
 
 #ifdef RADAQ_USE_COMPLETION
@@ -503,22 +475,26 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
     wait_for_completion(&rdq.comp);
 #else
     if (down_interruptible(&rdq.sem)) {
-        printk("read: aborted\n");
-        radaq_write_i2c(rdq.i2cdev, 0x00, PROTO_RUN);
-        radaq_set_led(0, 0);
+#ifdef RADAQ_DEBUG
+        printk("%s: aborted\n", __FUNCTION__);
+#endif
+        radaq_stop();
         return 0;
     }
 #endif
 
     if (rdq.overrun) {
-        printk("read: overrun\n");
-        radaq_write_i2c(rdq.i2cdev, 0x00, PROTO_RUN);
-        radaq_set_led(0, 0);
+#ifdef RADAQ_DEBUG
+        printk("%s: overrun\n", __FUNCTION__);
+#endif
+        radaq_stop();
         return 0;
     }
 
     if (copy_to_user((void *) buf, rdq.buffer[rdq.tpage], count)) {
-        printk("read: failed to copy to userspace\n");
+#ifdef RADAQ_DEBUG
+        printk("%s: failed to copy to userspace\n", __FUNCTION__);
+#endif
         return 0;
     }
 
@@ -529,8 +505,10 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 
 ssize_t radaq_write(struct file *filp, const char *buf, size_t count, loff_t *offp)
 {
+#ifdef RADAQ_DEBUG
     printk("%s(%p, %u, %lld)\n",
             __FUNCTION__, buf, count, *offp);
+#endif
     return 0;
 }
 
@@ -538,7 +516,9 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
 {
     switch (cmd) {
     case RADAQ_IOCTL_SAMPLERATE:
+#ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_SAMPLERATE(fs=%luHz)\n", arg);
+#endif
         if (arg < 1 || arg > SMPRATE_MAX) {
             return -EINVAL;
         }
@@ -546,7 +526,9 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
         break;
 
     case RADAQ_IOCTL_CHANNELS:
+#ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_CHANNELS(n=%lu)\n", arg);
+#endif
         if (arg < 1 || arg > CHANNELS) {
             return -EINVAL;
         }
@@ -554,23 +536,44 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
         break;
 
     case RADAQ_IOCTL_BUFFER_SIZE:
+#ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_BUFFER_SIZE\n");
+#endif
         if (copy_to_user((void *) arg, &rdq.bufsz, sizeof(rdq.bufsz))) {
             return -EINVAL;
         }
         break;
 
     case RADAQ_IOCTL_ARM:
+#ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_ARM\n");
+#endif
         rdq.idx = 0;
         rdq.hpage = 0;
         rdq.tpage = 0;
         rdq.running = 0;
         rdq.overrun = 0;
+        rdq.armed = 1;
+        break;
+
+    case RADAQ_IOCTL_HALT:
+#ifdef RADAQ_DEBUG
+        printk("RADAQ_IOCTL_HALT\n");
+#endif
+        radaq_stop();
+        break;
+
+    case RADAQ_IOCTL_RESET:
+#ifdef RADAQ_DEBUG
+        printk("RADAQ_IOCTL_RESET\n");
+#endif
+        radaq_reset();
         break;
 
     default:
-        printk("Invalid call %s(%u, %08lx)\n", __FUNCTION__, cmd, arg);
+#ifdef RADAQ_DEBUG
+        printk("%s: Invalid call (%u, %08lx)\n", __FUNCTION__, cmd, arg);
+#endif
         return -EINVAL;
     }
 
@@ -594,7 +597,6 @@ static int radaq_probe(struct i2c_client *client,
     struct device *i2cdev = &client->dev;
     uint8_t reg;
     //struct radaq *rdq;
-    //struct proc_dir_entry *ledfs, *testfs;
 
     if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
         return -ENODEV;
@@ -605,10 +607,12 @@ static int radaq_probe(struct i2c_client *client,
         return -ENODEV;
     }
     
+#ifdef RADAQ_DEBUG
     dev_notice(i2cdev, "Protocol version = %02x\n", reg);
+#endif
 
     if (reg != PROTOCOL_VERSION) {
-        dev_err(i2cdev, "Version not supported\n");
+        dev_err(i2cdev, "Protocol version %02x is not supported\n", reg);
         return -ENODEV;
     }
 
@@ -633,6 +637,7 @@ static int radaq_probe(struct i2c_client *client,
     rdq.running = 0;
     rdq.overrun = 0;
     rdq.leds = 0;
+    rdq.armed = 0;
 
     // Alloc cdev
     rdq.cdev = cdev_alloc();
@@ -667,28 +672,6 @@ static int radaq_probe(struct i2c_client *client,
 
     radaq_initialize();
 
-#if 0
-    // Create procfs entry for controlling the leds
-    ledfs = create_proc_entry("radaq_led", 0644, NULL);
-    if (ledfs) {
-        ledfs->data = i2cdev;
-        ledfs->read_proc = radaq_procfs_led_read;
-        ledfs->write_proc = radaq_procfs_led_write;
-    } else {
-        dev_warn(i2cdev, "Unable to register procfs entry\n");
-    }
-    
-    // Create procfs entry for testing
-    testfs = create_proc_entry("radaq_test", 0644, NULL);
-    if (testfs) {
-        testfs->data = dev;
-        testfs->read_proc = radaq_procfs_test_read;
-        testfs->write_proc = radaq_procfs_test_write;
-    } else {
-        dev_warn(dev, "Unable to register procfs entry\n");
-    }
-#endif
-
     // Save out handle
     //i2c_set_clientdata(client, rdq);
 
@@ -704,12 +687,6 @@ static int __devexit radaq_remove(struct i2c_client *client)
     radaq_shutdown();
 
     device_destroy(class, devno);
-
-#if 0
-    // Remove procfs entry
-    remove_proc_entry("radaq_led", NULL);
-    remove_proc_entry("radaq_test", NULL);
-#endif
 
     // Release GPIOs
     gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
@@ -744,10 +721,14 @@ static int radaq_init(void)
 
     gpio = __io_address(GPIO_BASE);
 
+    printk("radaq driver (c) 2013, Fredrik Ahlberg <fredrik@etf.nu>\n");
+
+#ifdef RADAQ_DEBUG
 #ifdef RADAQ_USE_COMPLETION
     printk("radaq: Using completion\n");
 #else
     printk("radaq: Using semaphore\n");
+#endif
 #endif
 
     res = alloc_chrdev_region(&devno, 0, 1, "radaq");

@@ -1,130 +1,149 @@
+/*
+ * rdqtool - Controlling Radaq data acquisition
+ *
+ * (c) 2013, Fredrik Ahlberg <fredrik@etf.nu>
+ *
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
-
-#include <fcntl.h>
+#include <unistd.h>
+#include "radaq.h"
 
 #define MAXBUFSZ 2048
 
-enum {
-    RADAQ_SAMPLERATE = 0xcafe0000,
-    RADAQ_CHANNELS = 0xcafe0001,
-    RADAQ_BUFFER_SIZE = 0xcafe0002,
-    RADAQ_ARM = 0xcafe0003,
-};
+int quiet = 0;
 
-int fd;
-
-void radaq_open(void)
+int prepare_device(unsigned int samplerate, unsigned int channels, size_t *bufsz)
 {
-    fd = open("/dev/radaq", O_RDWR|O_NOCTTY);
-    
-    if (fd == -1) {
-        perror("radaq_open: Unable to open device: ");
-        exit(-1);
-    }
-}
-
-int radaq_set_samplerate(unsigned int fs)
-{
-    if (ioctl(fd, RADAQ_SAMPLERATE, fs) < 0) {
-        fprintf(stderr, "%s: Unable to set samplerate fs=%luHz\n", __FUNCTION__, fs);
-        return -1;
-    } else {
-        return 0;
-    }
-}
-
-int radaq_set_channels(unsigned int channels)
-{
-    if (ioctl(fd, RADAQ_CHANNELS, channels) < 0) {
-        fprintf(stderr, "%s: Unable to set number of channels n=%lu\n", __FUNCTION__, channels);
-        return -1;
-    } else {
-        return 0;
-    }
-}
-
-size_t radaq_get_buffer_size(void)
-{
-    size_t res;
-
-    if (ioctl(fd, RADAQ_BUFFER_SIZE, &res) < 0) {
-        fprintf(stderr, "%s: Unable to get buffer size\n", __FUNCTION__);
-        return 0;
-    } else {
-        return res;
-    }
-}
-
-int radaq_read_buffer(unsigned short *data, unsigned int samples)
-{
-    size_t bytesRead = read(fd, data, samples * sizeof(unsigned short));
-
-    if (bytesRead < samples * sizeof(unsigned short)) {
-        fprintf(stderr, "%s: Short read! (read %lu bytes, expected %lu bytes)\n",
-                __FUNCTION__, bytesRead, samples * sizeof(unsigned short));
-        return -bytesRead;
-    } else {
-        return bytesRead;
-    }
-}
-
-int radaq_arm(void)
-{
-    if (ioctl(fd, RADAQ_ARM) < 0) {
-        fprintf(stderr, "%s: Unable to arm device\n", __FUNCTION__);
-        return -1;
-    } else {
-        return 0;
-    }
-}
-
-int main(void)
-{
-    radaq_open();
-
-    if (radaq_set_samplerate(20000) < 0) {
+    if (radaq_open() < 0) {
+        perror("radaq_open: Unable to open device");
         return -1;
     }
 
-    if (radaq_set_channels(1) < 0) {
+    if (radaq_set_samplerate(samplerate) < 0) {
+        fprintf(stderr, "Unable to set samplerate fs=%uHz\n", samplerate);
         return -1;
     }
 
-    size_t bufsz = radaq_get_buffer_size();
-    if (!bufsz) {
+    if (radaq_set_channels(channels) < 0) {
+        fprintf(stderr, "Unable to set number of channels n=%u\n", channels);
         return -1;
     }
 
-    if (bufsz > MAXBUFSZ || bufsz < 1) {
-        fprintf(stderr, "Invaild buffer size! Must be 0 < %lu <= %lu\n",
+    *bufsz = radaq_get_buffer_size();
+    if (!*bufsz) {
+        fprintf(stderr, "Unable to get buffer size\n");
+        return -1;
+    }
+
+    if (*bufsz > MAXBUFSZ || *bufsz < 1) {
+        fprintf(stderr, "Invalid buffer size! Must be 0 < %lu <= %lu\n",
                 bufsz, MAXBUFSZ);
         return -1;
     }
 
-    fprintf(stderr, "Using buffer page size %d samples\n", bufsz);
+    if (!quiet) {
+        fprintf(stderr, "Buffer page size = %d samples\n", *bufsz);
+        fprintf(stderr, "Samplerate = %d Hz, %d channels\n", samplerate, channels);
+    }
 
     if (radaq_arm() < 0) {
+        fprintf(stderr, "Unable to arm device\n");
         return -1;
     }
 
-    FILE *f = fopen("/tmp/radaq.bin", "w");
-    unsigned short buffer[MAXBUFSZ];
-    int pages = 0;
+    return 0;
+}
 
-    while (1) {
+int sample(size_t bufsz, unsigned int maxsamp, FILE *output)
+{
+    unsigned short buffer[MAXBUFSZ];
+    unsigned pages = 0, samples = 0;
+
+    while (samples < maxsamp) {
         int read = radaq_read_buffer(buffer, bufsz);
 
         if (read > 0) {
-            fwrite(buffer, read, 1, f);
-            fflush(f);
+            fwrite(buffer, read, 1, output);
+            fflush(output);
         } else {
+            if (!quiet) {
+                fprintf(stderr, "%s: Short read! (read %u bytes, expected %u bytes)\n",
+                    __FUNCTION__, read, bufsz * sizeof(unsigned short));
+            }
             break;
         }
         
-        printf("\r%d pages read (last page=%d bytes)", ++pages, read);
+        samples += bufsz;
+
+        if (!quiet) {
+            fprintf(stderr, "\r%d pages read (last page=%d bytes)", ++pages, read);
+        }
+    }
+    if (!quiet) {
+        fprintf(stderr, "\n");
     }
 
-    fclose(f);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    int c;
+    unsigned int samplerate = 10000, channels = 8, maxsamp = 0;
+    size_t bufsz;
+    FILE *output = stdout;
+
+    while ((c = getopt(argc, argv, "hqc:r:o:n:")) != -1) {
+        switch (c) {
+        case 'c':
+            channels = atoi(optarg);
+            break;
+
+        case 'r':
+            samplerate = atoi(optarg);
+            break;
+
+        case 'o':
+            output = fopen(optarg, "wb");
+            break;
+
+        case 'n':
+            maxsamp = atoi(optarg);
+            break;
+
+        case 'q':
+            quiet = 1;
+            break;
+
+        case 'h':
+            fprintf(stderr, "rdqtool (c) Fredrik Ahlberg, 2013 <fredrik@etf.nu>\n\n" \
+                    "Options:\t-q\tquiet\n" \
+                    "\t\t-c[n]\tnumber of channels, 1..8, default: 8\n" \
+                    "\t\t-r[fs]\tsample rate in Hz, 1..500000, default: 10000\n" \
+                    "\t\t-o[fn]\toutput filename, default: stdout\n" \
+                    "\t\t-n[ns]\tStop after n samples, default: run forever\n");
+            return 0;
+
+        case '?':
+            //fprintf(stderr, "Unknown argument '-%c'!\n", optopt);
+            return -1;
+        }
+    }
+
+    if (prepare_device(samplerate, channels, &bufsz) < 0) {
+        return -1;
+    }
+
+    if (sample(bufsz, maxsamp, output) < 0) {
+        return -1;
+    }
+
+    radaq_halt();
+
+    if (output != stdout) {
+        fclose(output);
+    }
 }
 
