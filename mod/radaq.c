@@ -16,6 +16,7 @@
 #include <linux/proc_fs.h>
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
+#include <asm/fiq.h>
 
 //#define RADAQ_USE_COMPLETION
 #define RADAQ_DEBUG
@@ -46,6 +47,8 @@ enum {
 #define GPIOSET(x) (0x1c+(x)*4)
 #define GPIOCLR(x) (0x28+(x)*4)
 #define GPIOLEV(x) (0x34+(x)*4)
+#define GPIOEDS(x) (0x40+(x)*4)
+#define GPIOREN(x) (0x4c+(x)*4)
 
 /*
  * Radaq MCU protocol
@@ -123,6 +126,11 @@ struct radaq {
     uint8_t leds;
     int running, overrun, armed;
 } rdq;
+
+static struct fiq_handler fh = {
+    .name = "radaq_fiq",
+};
+static uint8_t fiqStack[1024];
 
 /*
  * Read a register on the MCU
@@ -291,6 +299,40 @@ static inline int16_t radaq_unswizzle(uint32_t reg)
     return res;
 }
 
+void __attribute__ ((naked)) radaq_handle_fiq(void)
+{
+	/* entry takes care to store registers we will be treading on here */
+	asm __volatile__ (
+		"mov     ip, sp ;"
+		/* stash FIQ and normal regs */
+		"stmdb	sp!, {r0-r12,  lr};"
+		/* !! THIS SETS THE FRAME, adjust to > sizeof locals */
+		"sub     fp, ip, #256 ;"
+		);
+
+    // set pin
+    writel(1 << 13, __io_address(GPIO_BASE) + GPIOSET(1));
+    writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
+    
+    // ack interrupts on all banks
+    writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(0));
+    writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
+
+    /* epilogue */
+	mb();
+
+	/* exit back to normal mode restoring everything */
+	asm __volatile__ (
+		/* return FIQ regs back to pristine state
+		 * and get normal regs back
+		 */
+		"ldmia	sp!, {r0-r12, lr};"
+
+		/* return */
+		"subs	pc, lr, #4;"
+	);
+}
+
 #if 0
 void radaq_tasklet_proc(unsigned long dummy)
 {
@@ -303,8 +345,9 @@ DECLARE_TASKLET(radaq_tasklet, radaq_tasklet_proc, 0);
 /*
  * Conversion Complete Interrupt Service Routine (tm)
  */
-static irqreturn_t radaq_isr(int irq, void *data)
+static irqreturn_t radaq_handle_irq(int irq, void *data)
 {
+#if 0
     uint32_t result[CHANNELS], idx;
     //struct radaq *rdq = data;
 
@@ -343,9 +386,22 @@ static irqreturn_t radaq_isr(int irq, void *data)
     }
 
     writel(1 << 13, gpio + GPIOCLR(1));
+#endif
+
+    // clear pin
+    writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
+
+    // ack bank 1
+    writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
 
     return IRQ_HANDLED;
 }
+
+static struct irqaction radaq_irq = {
+    .name = "Radaq buffer handler",
+    .flags = IRQF_DISABLED | IRQF_IRQPOLL,
+    .handler = radaq_handle_irq,
+};
 
 /*
  * Power up ADC and set configuration
@@ -597,6 +653,7 @@ static int radaq_probe(struct i2c_client *client,
     struct device *i2cdev = &client->dev;
     uint8_t reg;
     //struct radaq *rdq;
+    struct pt_regs regs;
 
     if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
         return -ENODEV;
@@ -661,6 +718,7 @@ static int radaq_probe(struct i2c_client *client,
     }
 
     // Register GPIO interrupt
+#if 0
     if (request_irq(gpio_to_irq(2), radaq_isr, IRQ_TYPE_EDGE_RISING, "Radaq", NULL)) {
         dev_err(i2cdev, "Unable to register GPIO interrupt\n");
 
@@ -669,6 +727,27 @@ static int radaq_probe(struct i2c_client *client,
 
         return -ENODEV;
     }
+#endif
+
+    // Initialize FIQ
+    claim_fiq(&fh);
+    set_fiq_handler(__FIQ_Branch, 8);
+    memset(&regs, 0, sizeof(regs));
+    regs.ARM_r8 = (long)radaq_handle_fiq;
+    regs.ARM_r9 = (long)0;
+    regs.ARM_sp = (long)fiqStack + sizeof(fiqStack) - 4;
+    set_fiq_regs(&regs);
+    enable_fiq(INTERRUPT_GPIO3);
+
+    writel(1 << 2, __io_address(GPIO_BASE)+GPIOEDS(0));
+    writel(1 << 2, __io_address(GPIO_BASE)+GPIOREN(0));
+
+    // Initialize IRQ
+#if 0
+    writel(1 << 13, __io_address(GPIO_BASE)+GPIOEDS(1));
+    writel(1 << 13, __io_address(GPIO_BASE)+GPIOREN(1));
+    setup_irq(IRQ_GPIO3, &radaq_irq);
+#endif    
 
     radaq_initialize();
 
