@@ -120,7 +120,6 @@ struct radaq {
 
     uint32_t raw[2][BUFSIZE*CHANNELS];
 
-    //int16_t buffer[2][BUFSIZE*CHANNELS];
     size_t hpage, tpage, idx, buflen;
 #ifdef RADAQ_USE_COMPLETION
     struct completion comp;
@@ -137,24 +136,9 @@ static struct fiq_handler fh = {
 };
 static uint8_t fiqStack[1024];
 
-struct bcm2708_dma_cb dmacb;
 void __iomem *dma_cb_phys;
-
 void __iomem *dma_base;
-
 struct bcm2708_dma_cb *dma_cb_base;
-
-#define DMA_NO_WIDE_BURSTS  (1<<26)
-#define DMA_WAIT_RESP   (1<<3)
-#define DMA_D_DREQ      (1<<6)
-#define DMA_PER_MAP(x)  ((x)<<16)
-#define DMA_END         (1<<1)
-#define DMA_RESET       (1<<31)
-#define DMA_INT         (1<<2)
-
-#define DMA_CS          0x00
-#define DMA_CONBLK_AD   0x04
-#define DMA_DEBUG       0x20
 
 /*
  * Read a register on the MCU
@@ -297,22 +281,8 @@ static inline void radaq_read_result(uint32_t *data, int channels)
 }
 
 /*
- * Unswizzle the bits to account for the GPIO to data bus mapping
+ * 
  */
-static inline int16_t radaq_unswizzle(uint32_t reg)
-{
-    int idx;
-    uint16_t res = 0;
-
-    for (idx=0; idx<16; idx++) {
-        if (reg & (1 << radaq_gpios[idx].gpio)) {
-            res |= 1 << idx;
-        }
-    }
-
-    return res;
-}
-
 void __attribute__ ((naked)) radaq_handle_fiq(void)
 {
 	/* entry takes care to store registers we will be treading on here */
@@ -328,22 +298,24 @@ void __attribute__ ((naked)) radaq_handle_fiq(void)
     writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(0));
     writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
 
-    radaq_read_result(&rdq.raw[rdq.hpage][rdq.idx], rdq.channels);
-    rdq.idx += rdq.channels;
+    if (rdq.running) {
+        radaq_read_result(&rdq.raw[rdq.hpage][rdq.idx], rdq.channels);
+        rdq.idx += rdq.channels;
 
-    if (rdq.idx == rdq.buflen) {
-        rdq.idx = 0;
-        rdq.hpage = !rdq.hpage;
+        if (rdq.idx == rdq.buflen) {
+            rdq.idx = 0;
+            rdq.hpage = !rdq.hpage;
 
-        if (rdq.hpage == rdq.tpage) {
-            rdq.overrun = 1;
-            rdq.running = 0;
+            if (rdq.hpage == rdq.tpage) {
+                rdq.overrun = 1;
+                rdq.running = 0;
+            }
+
+            writel(1 << 13, __io_address(GPIO_BASE) + GPIOSET(1));
+            writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
+
+            bcm_dma_start(dma_base, (dma_addr_t)dma_cb_phys);
         }
-
-        writel(1 << 13, __io_address(GPIO_BASE) + GPIOSET(1));
-        writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
-
-        bcm_dma_start(dma_base, (dma_addr_t)dma_cb_phys);
     }
 
     /* epilogue */
@@ -366,60 +338,13 @@ void __attribute__ ((naked)) radaq_handle_fiq(void)
  */
 static irqreturn_t radaq_handle_irq(int irq, void *data)
 {
-#if 0
-    uint32_t result[CHANNELS], idx;
-    //struct radaq *rdq = data;
-
-    if (!rdq.running) {
-#ifdef RADAQ_DEBUG
-        //printk("isr: not running!\n");
-#endif
-        return IRQ_HANDLED;
-    }
-
-    writel(1 << 13, gpio + GPIOSET(1));
-
-    radaq_read_result(result, rdq.channels);
-
-    for (idx=0; idx<rdq.channels; idx++) {
-        rdq.buffer[rdq.hpage][rdq.idx++] = radaq_unswizzle(result[idx]);
-        if (rdq.idx == BUFSIZE) {
-            rdq.idx = 0;
-            rdq.hpage = !rdq.hpage;
-
-            if (rdq.hpage == rdq.tpage) {
-                rdq.overrun = 1;
-                rdq.running = 0;
-#ifdef RADAQ_DEBUG
-                //printk("isr: buffer overrun!\n");
-#endif
-            }
-#endif
-
     writel(BCM2708_DMA_INT, dma_base + BCM2708_DMA_CS);
 
-    printk("%s!\n", __FUNCTION__);
-
 #ifdef RADAQ_USE_COMPLETION
-            complete(&rdq.comp);
+    complete(&rdq.comp);
 #else
-            up(&rdq.sem);
+    up(&rdq.sem);
 #endif
-
-#if 0
-            //tasklet_schedule(&radaq_tasklet);
-        }
-    }
-
-    writel(1 << 13, gpio + GPIOCLR(1));
-#endif
-
-
-    // clear pin
-    //writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
-
-    // ack bank 1
-    //writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
 
     return IRQ_HANDLED;
 }
@@ -462,7 +387,6 @@ static void radaq_shutdown(void)
     radaq_set_led(0, 0);
     radaq_set_led(1, 0);
 }
-
 
 /*
  * Start sampling!
@@ -510,6 +434,9 @@ static void radaq_reset(void)
     radaq_set_led(1, 1);
 }
 
+/*
+ * Calculate buffer page size to contain an integral number of tuples.
+ */
 static void radaq_adjust_buffer(void)
 {
     size_t tuples = (BUFSIZE * CHANNELS) / rdq.channels;
@@ -519,6 +446,23 @@ static void radaq_adjust_buffer(void)
     printk("%s: buffer=%d, channels=%d, tuples=%d, buflen=%d\n",
             __FUNCTION__, BUFSIZE*CHANNELS, rdq.channels, tuples, rdq.buflen);
 #endif
+}
+
+/*
+ * Unswizzle the bits to account for the GPIO to data bus mapping
+ */
+static inline int16_t radaq_unswizzle(uint32_t reg)
+{
+    int idx;
+    uint16_t res = 0;
+
+    for (idx=0; idx<16; idx++) {
+        if (reg & (1 << radaq_gpios[idx].gpio)) {
+            res |= 1 << idx;
+        }
+    }
+
+    return res;
 }
 
 /*
@@ -550,10 +494,12 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 
     if (rdq.overrun) {
 #ifdef RADAQ_DEBUG
-        printk("%s: overrun\n", __FUNCTION__);
+        printk("%s: already overrun.\n", __FUNCTION__);
 #endif
         return 0;
     }
+
+    //printk("%s: hpage=%d, tpage=%d\n", __FUNCTION__, rdq.hpage, rdq.tpage);
 
     if (!rdq.running) {
         if (rdq.armed) {
@@ -582,7 +528,8 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 
     if (rdq.overrun) {
 #ifdef RADAQ_DEBUG
-        printk("%s: overrun\n", __FUNCTION__);
+        printk("%s: done, overrun. hpage=%d, tpage=%d\n",
+                __FUNCTION__, rdq.hpage, rdq.tpage);
 #endif
         radaq_stop();
         return 0;
@@ -650,6 +597,9 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
     case RADAQ_IOCTL_ARM:
 #ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_ARM\n");
+#endif
+#ifndef RADAQ_USE_COMPLETION
+        sema_init(&rdq.sem, 0);
 #endif
         rdq.idx = 0;
         rdq.hpage = 0;
@@ -743,7 +693,6 @@ static int radaq_probe(struct i2c_client *client,
     rdq.armed = 0;
     radaq_adjust_buffer();
     
-    //dma_cb_phys = mem_virt_to_phys(&dmacb);
     dma_cb_base = dma_alloc_writecombine(NULL, SZ_4K, &dma_cb_phys, GFP_KERNEL);
 #ifdef RADAQ_DEBUG
     printk("radaq: dma_cb_base=%08x, dma_cb_phys = %08x\n", dma_cb_base, dma_cb_phys);
@@ -763,11 +712,6 @@ static int radaq_probe(struct i2c_client *client,
     } else {
         printk("%s: dma_base = %08x, dma_irq = %d\n", __FUNCTION__, dma_base, dma_irq);
     }
-
-    /*writel(DMA_RESET, __io_address(DMA_BASE) + DMA_CS);
-    udelay(10);
-    writel(DMA_INT|DMA_END, __io_address(DMA_BASE) + DMA_CS);
-    writel(7, __io_address(DMA_BASE) + DMA_DEBUG);*/
 
     // Alloc cdev
     rdq.cdev = cdev_alloc();
@@ -790,18 +734,6 @@ static int radaq_probe(struct i2c_client *client,
         return -ENOMEM;
     }
 
-    // Register GPIO interrupt
-#if 0
-    if (request_irq(gpio_to_irq(2), radaq_isr, IRQ_TYPE_EDGE_RISING, "Radaq", NULL)) {
-        dev_err(i2cdev, "Unable to register GPIO interrupt\n");
-
-        gpio_free_array(radaq_gpios, ARRAY_SIZE(radaq_gpios));
-        //kfree(rdq);
-
-        return -ENODEV;
-    }
-#endif
-
     // Initialize FIQ
     claim_fiq(&fh);
     set_fiq_handler(__FIQ_Branch, 8);
@@ -816,12 +748,11 @@ static int radaq_probe(struct i2c_client *client,
     writel(1 << 2, __io_address(GPIO_BASE)+GPIOREN(0));
 
     // Initialize IRQ
-    /*writel(1 << 13, __io_address(GPIO_BASE)+GPIOEDS(1));
-    writel(1 << 13, __io_address(GPIO_BASE)+GPIOREN(1));*/
-    //setup_irq(IRQ_DMA0, &radaq_irq);
     if (dma_irq) {
         printk("radaq: registering irq\n");
         setup_irq(dma_irq, &radaq_irq);
+    } else {
+        printk("radaq: no irq to register!\n");
     }
 
     radaq_initialize();
@@ -868,27 +799,6 @@ static struct i2c_driver radaq_driver = {
     .remove     = __devexit_p(radaq_remove),
     .id_table   = radaq_id
 };
-
-/*static inline void __iomem *UserVirtualToBus(void __user *pUser)
-{
-    int mapped;
-    struct page *pPage;
-    void *phys;
-
-    mapped = get_user_pages(current, current->mm,
-           (unsigned long)pUser, 1,
-           1, 0,
-           &pPage,
-           0);
-
-    if (mapped <= 0)
-        return 0;
-
-    phys = page_address(pPage) + offset_in_page(pUser);
-    page_cache_release(pPage);
-
-    return (void __iomem *) __virt_to_bus(phys);
-}*/
 
 static int radaq_init(void)
 {
