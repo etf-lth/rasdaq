@@ -120,7 +120,7 @@ struct radaq {
 
     uint32_t raw[2][BUFSIZE*CHANNELS];
 
-    int16_t buffer[2][BUFSIZE*CHANNELS];
+    //int16_t buffer[2][BUFSIZE*CHANNELS];
     size_t hpage, tpage, idx, buflen;
 #ifdef RADAQ_USE_COMPLETION
     struct completion comp;
@@ -285,21 +285,11 @@ static inline void radaq_read_result(uint32_t *data, int channels)
         // assert /rd
         writel(1 << 31, gpio + GPIOCLR(0));
         
-        // dummy read
-        /*for (delay=0; delay<10; delay++) {
-            *data = readl(gpio + GPIOLEV(0));
-        }*/
-
         // sample data bus
         *data++ = readl(gpio + GPIOLEV(0));
 
         // deassert /rd
         writel(1 << 31, gpio + GPIOSET(0));
-
-        // delay for good measure
-        /*for (delay=0; delay<10; delay++) {
-            writel(1 << 31, gpio + GPIOSET(0));
-        }*/
     }
 
     // deassert /cs
@@ -354,10 +344,6 @@ void __attribute__ ((naked)) radaq_handle_fiq(void)
         writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
 
         bcm_dma_start(dma_base, (dma_addr_t)dma_cb_phys);
-
-        // trig irq
-        //writel(&dmacb, __io_address(DMA_BASE) + DMA_CONBLK_AD);
-        //writel(0x10880001, __io_address(DMA_BASE) + DMA_CS);
     }
 
     /* epilogue */
@@ -374,15 +360,6 @@ void __attribute__ ((naked)) radaq_handle_fiq(void)
 		"subs	pc, lr, #4;"
 	);
 }
-
-#if 0
-void radaq_tasklet_proc(unsigned long dummy)
-{
-    complete(&rdq.comp);
-}
-
-DECLARE_TASKLET(radaq_tasklet, radaq_tasklet_proc, 0);
-#endif
 
 /*
  * Conversion Complete Interrupt Service Routine (tm)
@@ -568,6 +545,9 @@ static int radaq_release(struct inode *inode, struct file *filp)
 
 ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
 {
+    int idx;
+    uint16_t *p;
+
     if (rdq.overrun) {
 #ifdef RADAQ_DEBUG
         printk("%s: overrun\n", __FUNCTION__);
@@ -608,7 +588,12 @@ ssize_t radaq_read(struct file *filp, char *buf, size_t count, loff_t *offp)
         return 0;
     }
 
-    if (copy_to_user((void *) buf, rdq.buffer[rdq.tpage], count)) {
+    p = (uint16_t *)rdq.raw[rdq.tpage];
+    for (idx=0; idx<rdq.buflen; idx++) {
+        *p++ = radaq_unswizzle(rdq.raw[rdq.tpage][idx]);
+    }
+
+    if (copy_to_user((void *) buf, rdq.raw[rdq.tpage], count)) {
 #ifdef RADAQ_DEBUG
         printk("%s: failed to copy to userspace\n", __FUNCTION__);
 #endif
@@ -748,7 +733,7 @@ static int radaq_probe(struct i2c_client *client,
     sema_init(&rdq.sem, 0);
 #endif
     rdq.i2cdev = i2cdev;
-    memset(rdq.buffer, 0, sizeof(rdq.buffer));
+    memset(rdq.raw, 0, sizeof(rdq.raw));
     rdq.channels = CHANNELS;
     rdq.hpage = 0;
     rdq.tpage = 0;
