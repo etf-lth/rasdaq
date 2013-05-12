@@ -16,7 +16,11 @@
 #include <linux/proc_fs.h>
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
+#include <linux/mm.h>
+#include <linux/pagemap.h>
+#include <linux/dma-mapping.h>
 #include <asm/fiq.h>
+#include <mach/dma.h>
 
 //#define RADAQ_USE_COMPLETION
 #define RADAQ_DEBUG
@@ -114,15 +118,16 @@ struct radaq {
     struct cdev *cdev;
     struct device *i2cdev, *ctrldev;
 
+    uint32_t raw[2][BUFSIZE*CHANNELS];
+
     int16_t buffer[2][BUFSIZE*CHANNELS];
-    size_t hpage, tpage, idx;
+    size_t hpage, tpage, idx, buflen;
 #ifdef RADAQ_USE_COMPLETION
     struct completion comp;
 #else
     struct semaphore sem;
 #endif
     int channels;
-    size_t bufsz;
     uint8_t leds;
     int running, overrun, armed;
 } rdq;
@@ -131,6 +136,25 @@ static struct fiq_handler fh = {
     .name = "radaq_fiq",
 };
 static uint8_t fiqStack[1024];
+
+struct bcm2708_dma_cb dmacb;
+void __iomem *dma_cb_phys;
+
+void __iomem *dma_base;
+
+struct bcm2708_dma_cb *dma_cb_base;
+
+#define DMA_NO_WIDE_BURSTS  (1<<26)
+#define DMA_WAIT_RESP   (1<<3)
+#define DMA_D_DREQ      (1<<6)
+#define DMA_PER_MAP(x)  ((x)<<16)
+#define DMA_END         (1<<1)
+#define DMA_RESET       (1<<31)
+#define DMA_INT         (1<<2)
+
+#define DMA_CS          0x00
+#define DMA_CONBLK_AD   0x04
+#define DMA_DEBUG       0x20
 
 /*
  * Read a register on the MCU
@@ -309,14 +333,32 @@ void __attribute__ ((naked)) radaq_handle_fiq(void)
 		/* !! THIS SETS THE FRAME, adjust to > sizeof locals */
 		"sub     fp, ip, #256 ;"
 		);
-
-    // set pin
-    writel(1 << 13, __io_address(GPIO_BASE) + GPIOSET(1));
-    writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
     
     // ack interrupts on all banks
     writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(0));
     writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
+
+    radaq_read_result(&rdq.raw[rdq.hpage][rdq.idx], rdq.channels);
+    rdq.idx += rdq.channels;
+
+    if (rdq.idx == rdq.buflen) {
+        rdq.idx = 0;
+        rdq.hpage = !rdq.hpage;
+
+        if (rdq.hpage == rdq.tpage) {
+            rdq.overrun = 1;
+            rdq.running = 0;
+        }
+
+        writel(1 << 13, __io_address(GPIO_BASE) + GPIOSET(1));
+        writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
+
+        bcm_dma_start(dma_base, (dma_addr_t)dma_cb_phys);
+
+        // trig irq
+        //writel(&dmacb, __io_address(DMA_BASE) + DMA_CONBLK_AD);
+        //writel(0x10880001, __io_address(DMA_BASE) + DMA_CS);
+    }
 
     /* epilogue */
 	mb();
@@ -375,12 +417,19 @@ static irqreturn_t radaq_handle_irq(int irq, void *data)
                 //printk("isr: buffer overrun!\n");
 #endif
             }
+#endif
+
+    writel(BCM2708_DMA_INT, dma_base + BCM2708_DMA_CS);
+
+    printk("%s!\n", __FUNCTION__);
 
 #ifdef RADAQ_USE_COMPLETION
             complete(&rdq.comp);
 #else
             up(&rdq.sem);
 #endif
+
+#if 0
             //tasklet_schedule(&radaq_tasklet);
         }
     }
@@ -388,11 +437,12 @@ static irqreturn_t radaq_handle_irq(int irq, void *data)
     writel(1 << 13, gpio + GPIOCLR(1));
 #endif
 
+
     // clear pin
-    writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
+    //writel(1 << 13, __io_address(GPIO_BASE) + GPIOCLR(1));
 
     // ack bank 1
-    writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
+    //writel(0xffffffff, __io_address(GPIO_BASE) + GPIOEDS(1));
 
     return IRQ_HANDLED;
 }
@@ -481,6 +531,17 @@ static void radaq_reset(void)
     radaq_write_reg(rdq.i2cdev, (1<<31)|(1<<27)|(1<<13)|0x000003ff);
     mdelay(100);
     radaq_set_led(1, 1);
+}
+
+static void radaq_adjust_buffer(void)
+{
+    size_t tuples = (BUFSIZE * CHANNELS) / rdq.channels;
+    rdq.buflen = tuples * rdq.channels;
+
+#ifdef RADAQ_DEBUG
+    printk("%s: buffer=%d, channels=%d, tuples=%d, buflen=%d\n",
+            __FUNCTION__, BUFSIZE*CHANNELS, rdq.channels, tuples, rdq.buflen);
+#endif
 }
 
 /*
@@ -589,13 +650,14 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
             return -EINVAL;
         }
         rdq.channels = arg;
+        radaq_adjust_buffer();
         break;
 
     case RADAQ_IOCTL_BUFFER_SIZE:
 #ifdef RADAQ_DEBUG
         printk("RADAQ_IOCTL_BUFFER_SIZE\n");
 #endif
-        if (copy_to_user((void *) arg, &rdq.bufsz, sizeof(rdq.bufsz))) {
+        if (copy_to_user((void *) arg, &rdq.buflen, sizeof(rdq.buflen))) {
             return -EINVAL;
         }
         break;
@@ -688,13 +750,39 @@ static int radaq_probe(struct i2c_client *client,
     rdq.i2cdev = i2cdev;
     memset(rdq.buffer, 0, sizeof(rdq.buffer));
     rdq.channels = CHANNELS;
-    rdq.bufsz = BUFSIZE;
     rdq.hpage = 0;
     rdq.tpage = 0;
     rdq.running = 0;
     rdq.overrun = 0;
     rdq.leds = 0;
     rdq.armed = 0;
+    radaq_adjust_buffer();
+    
+    //dma_cb_phys = mem_virt_to_phys(&dmacb);
+    dma_cb_base = dma_alloc_writecombine(NULL, SZ_4K, &dma_cb_phys, GFP_KERNEL);
+#ifdef RADAQ_DEBUG
+    printk("radaq: dma_cb_base=%08x, dma_cb_phys = %08x\n", dma_cb_base, dma_cb_phys);
+#endif
+
+    dma_cb_base->info = BCM2708_DMA_INT_EN | BCM2708_DMA_WAIT_RESP | (1<<7);
+    dma_cb_base->src = 0;
+    dma_cb_base->dst = 0;
+    dma_cb_base->length = 1;
+    dma_cb_base->stride = 0;
+    dma_cb_base->next = 0;
+
+    int dma_irq = 0;
+
+    if (bcm_dma_chan_alloc(0, &dma_base, &dma_irq) < 0) {
+        printk("%s: unable to alloc dma\n", __FUNCTION__);
+    } else {
+        printk("%s: dma_base = %08x, dma_irq = %d\n", __FUNCTION__, dma_base, dma_irq);
+    }
+
+    /*writel(DMA_RESET, __io_address(DMA_BASE) + DMA_CS);
+    udelay(10);
+    writel(DMA_INT|DMA_END, __io_address(DMA_BASE) + DMA_CS);
+    writel(7, __io_address(DMA_BASE) + DMA_DEBUG);*/
 
     // Alloc cdev
     rdq.cdev = cdev_alloc();
@@ -743,11 +831,13 @@ static int radaq_probe(struct i2c_client *client,
     writel(1 << 2, __io_address(GPIO_BASE)+GPIOREN(0));
 
     // Initialize IRQ
-#if 0
-    writel(1 << 13, __io_address(GPIO_BASE)+GPIOEDS(1));
-    writel(1 << 13, __io_address(GPIO_BASE)+GPIOREN(1));
-    setup_irq(IRQ_GPIO3, &radaq_irq);
-#endif    
+    /*writel(1 << 13, __io_address(GPIO_BASE)+GPIOEDS(1));
+    writel(1 << 13, __io_address(GPIO_BASE)+GPIOREN(1));*/
+    //setup_irq(IRQ_DMA0, &radaq_irq);
+    if (dma_irq) {
+        printk("radaq: registering irq\n");
+        setup_irq(dma_irq, &radaq_irq);
+    }
 
     radaq_initialize();
 
@@ -794,6 +884,27 @@ static struct i2c_driver radaq_driver = {
     .id_table   = radaq_id
 };
 
+/*static inline void __iomem *UserVirtualToBus(void __user *pUser)
+{
+    int mapped;
+    struct page *pPage;
+    void *phys;
+
+    mapped = get_user_pages(current, current->mm,
+           (unsigned long)pUser, 1,
+           1, 0,
+           &pPage,
+           0);
+
+    if (mapped <= 0)
+        return 0;
+
+    phys = page_address(pPage) + offset_in_page(pUser);
+    page_cache_release(pPage);
+
+    return (void __iomem *) __virt_to_bus(phys);
+}*/
+
 static int radaq_init(void)
 {
     int res;
@@ -809,6 +920,7 @@ static int radaq_init(void)
     printk("radaq: Using semaphore\n");
 #endif
 #endif
+
 
     res = alloc_chrdev_region(&devno, 0, 1, "radaq");
     if (res < 0) {
