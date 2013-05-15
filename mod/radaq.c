@@ -269,6 +269,9 @@ static inline void radaq_read_result(uint32_t *data, int channels)
         // assert /rd
         writel(1 << 31, gpio + GPIOCLR(0));
         
+        // delay?
+        readl(gpio + GPIOLEV(0));
+
         // sample data bus
         *data++ = readl(gpio + GPIOLEV(0));
 
