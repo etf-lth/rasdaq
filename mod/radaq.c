@@ -35,6 +35,7 @@ enum {
     RADAQ_IOCTL_ARM             = 0xcafe0003,
     RADAQ_IOCTL_HALT            = 0xcafe0004,
     RADAQ_IOCTL_RESET           = 0xcafe0005,
+    RADAQ_IOCTL_MAXBUF          = 0xcafe0006,
 };
 
 /*
@@ -42,7 +43,7 @@ enum {
  */
 #define SMPRATE_MAX 500000
 
-#define BUFSIZE 1024
+#define BUFSIZE 8192
 #define CHANNELS 8
 
 /*
@@ -120,7 +121,7 @@ struct radaq {
 
     uint32_t raw[2][BUFSIZE*CHANNELS];
 
-    size_t hpage, tpage, idx, buflen;
+    size_t hpage, tpage, idx, buflen, maxbuflen;
 #ifdef RADAQ_USE_COMPLETION
     struct completion comp;
 #else
@@ -270,6 +271,15 @@ static inline void radaq_read_result(uint32_t *data, int channels)
         writel(1 << 31, gpio + GPIOCLR(0));
         
         // delay?
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
+        readl(gpio + GPIOLEV(0));
         readl(gpio + GPIOLEV(0));
 
         // sample data bus
@@ -442,12 +452,18 @@ static void radaq_reset(void)
  */
 static void radaq_adjust_buffer(void)
 {
-    size_t tuples = (BUFSIZE * CHANNELS) / rdq.channels;
+    size_t tuples;
+
+    if (rdq.maxbuflen > BUFSIZE) {
+        rdq.maxbuflen = BUFSIZE;
+    }
+
+    tuples = (rdq.maxbuflen * CHANNELS) / rdq.channels;
     rdq.buflen = tuples * rdq.channels;
 
 #ifdef RADAQ_DEBUG
-    printk("%s: buffer=%d, channels=%d, tuples=%d, buflen=%d\n",
-            __FUNCTION__, BUFSIZE*CHANNELS, rdq.channels, tuples, rdq.buflen);
+    printk("%s: maxbuflen=%d, buffer=%d, channels=%d, tuples=%d, buflen=%d\n",
+            __FUNCTION__, rdq.maxbuflen, BUFSIZE*CHANNELS, rdq.channels, tuples, rdq.buflen);
 #endif
 }
 
@@ -626,6 +642,17 @@ static long radaq_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned l
         radaq_reset();
         break;
 
+    case RADAQ_IOCTL_MAXBUF:
+#ifdef RADAQ_DEBUG
+        printk("RADAQ_IOCTL_MAXBUF(n=%lu)\n", arg);
+#endif
+        if (arg < 1 || arg > BUFSIZE) {
+            return -EINVAL;
+        }
+        rdq.maxbuflen = arg;
+        radaq_adjust_buffer();
+        break;
+
     default:
 #ifdef RADAQ_DEBUG
         printk("%s: Invalid call (%u, %08lx)\n", __FUNCTION__, cmd, arg);
@@ -694,6 +721,7 @@ static int radaq_probe(struct i2c_client *client,
     rdq.overrun = 0;
     rdq.leds = 0;
     rdq.armed = 0;
+    rdq.maxbuflen = BUFSIZE;
     radaq_adjust_buffer();
     
     dma_cb_base = dma_alloc_writecombine(NULL, SZ_4K, &dma_cb_phys, GFP_KERNEL);

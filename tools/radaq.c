@@ -71,3 +71,12 @@ int radaq_halt(void)
         return 0;
     }
 }
+
+int radaq_set_max_buffer_size(unsigned int size)
+{
+    if (ioctl(fd, RADAQ_MAXBUF, size) < 0) {
+        return -1;
+    } else {
+        return 0;
+    }
+}

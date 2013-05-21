@@ -7,6 +7,7 @@ enum {
     RADAQ_BUFFER_SIZE = 0xcafe0002,
     RADAQ_ARM = 0xcafe0003,
     RADAQ_HALT = 0xcafe0004,
+    RADAQ_MAXBUF = 0xcafe0006,
 };
 
 int radaq_open(void);
@@ -16,5 +17,6 @@ size_t radaq_get_buffer_size(void);
 int radaq_read_buffer(unsigned short *data, unsigned int samples);
 int radaq_arm(void);
 int radaq_halt(void);
+int radaq_set_max_buffer_size(unsigned int size);
 
 #endif

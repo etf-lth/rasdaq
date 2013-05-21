@@ -10,11 +10,11 @@
 #include <unistd.h>
 #include "radaq.h"
 
-#define MAXBUFSZ 2048
+#define MAXBUFSZ 65536
 
 int quiet = 0;
 
-int prepare_device(unsigned int samplerate, unsigned int channels, size_t *bufsz)
+int prepare_device(unsigned int samplerate, unsigned int channels, size_t maxbufsz, size_t *bufsz)
 {
     if (radaq_open() < 0) {
         perror("radaq_open: Unable to open device");
@@ -31,6 +31,11 @@ int prepare_device(unsigned int samplerate, unsigned int channels, size_t *bufsz
         return -1;
     }
 
+    if (radaq_set_max_buffer_size(maxbufsz) < 0) {
+        fprintf(stderr, "Unable to set preferred buffer size n=%u\n", maxbufsz);
+        return -1;
+    }
+
     *bufsz = radaq_get_buffer_size();
     if (!*bufsz) {
         fprintf(stderr, "Unable to get buffer size\n");
@@ -39,7 +44,7 @@ int prepare_device(unsigned int samplerate, unsigned int channels, size_t *bufsz
 
     if (*bufsz > MAXBUFSZ || *bufsz < 1) {
         fprintf(stderr, "Invalid buffer size! Must be 0 < %lu <= %lu\n",
-                bufsz, MAXBUFSZ);
+                *bufsz, MAXBUFSZ);
         return -1;
     }
 
@@ -61,7 +66,7 @@ int sample(size_t bufsz, unsigned int maxsamp, FILE *output)
     unsigned short buffer[MAXBUFSZ];
     unsigned pages = 0, samples = 0;
 
-    while (samples < maxsamp) {
+    while (!maxsamp || samples < maxsamp) {
         int read = radaq_read_buffer(buffer, bufsz);
 
         if (read > 0) {
@@ -69,7 +74,7 @@ int sample(size_t bufsz, unsigned int maxsamp, FILE *output)
             fflush(output);
         } else {
             if (!quiet) {
-                fprintf(stderr, "%s: Short read! (read %u bytes, expected %u bytes)\n",
+                fprintf(stderr, "\n%s: Buffer underrun! (read %u bytes, expected %u bytes)\n",
                     __FUNCTION__, read, bufsz * sizeof(unsigned short));
             }
             break;
@@ -91,11 +96,11 @@ int sample(size_t bufsz, unsigned int maxsamp, FILE *output)
 int main(int argc, char **argv)
 {
     int c;
-    unsigned int samplerate = 10000, channels = 8, maxsamp = 0;
+    unsigned int samplerate = 10000, channels = 8, maxbufsz = 8192, maxsamp = 0;
     size_t bufsz;
     FILE *output = stdout;
 
-    while ((c = getopt(argc, argv, "hqc:r:o:n:")) != -1) {
+    while ((c = getopt(argc, argv, "hqc:r:b:o:n:")) != -1) {
         switch (c) {
         case 'c':
             channels = atoi(optarg);
@@ -103,6 +108,10 @@ int main(int argc, char **argv)
 
         case 'r':
             samplerate = atoi(optarg);
+            break;
+
+        case 'b':
+            maxbufsz = atoi(optarg);
             break;
 
         case 'o':
@@ -122,6 +131,7 @@ int main(int argc, char **argv)
                     "Options:\t-q\tquiet\n" \
                     "\t\t-c[n]\tnumber of channels, 1..8, default: 8\n" \
                     "\t\t-r[fs]\tsample rate in Hz, 1..500000, default: 10000\n" \
+                    "\t\t-b[n]\tmaximum buffer size in tuples, 1..8192\n" \
                     "\t\t-o[fn]\toutput filename, default: stdout\n" \
                     "\t\t-n[ns]\tStop after n samples, default: run forever\n");
             return 0;
@@ -132,7 +142,7 @@ int main(int argc, char **argv)
         }
     }
 
-    if (prepare_device(samplerate, channels, &bufsz) < 0) {
+    if (prepare_device(samplerate, channels, maxbufsz, &bufsz) < 0) {
         return -1;
     }
 
